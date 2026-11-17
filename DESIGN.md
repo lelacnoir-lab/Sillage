@@ -1,5 +1,7 @@
 # Design
 
+This file records design notes from the upstream fork. See Prise-en-main.md and Manuel-de-reference.md for the current Sillage interface.
+
 How this firmware looks and behaves. Every screen and feature follows this page. If something here is wrong, change this page first, then the code.
 
 Each rule comes from what FM-1 owners said about the stock firmware, Felucca and the other community firmwares, in GitHub issues and Discussions, forums and reviews. The issue numbers in brackets are Felucca's unless marked.

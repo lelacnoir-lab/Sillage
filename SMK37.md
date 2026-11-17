@@ -1,4 +1,6 @@
-# Skiff on the M-VAVE SMK-37
+# Upstream reference — M-VAVE SMK-37
+
+This document records the upstream Skiff port. The Sillage 2.2 beta package targets the FM-1.
 
 Skiff runs on the **SMK-37 Pro**: the same six tracks, engines, sequencer and screens as on the FM-1, played from 37
 velocity keys, with the 16 pads, four faders and two wheels doing more ([the controls](#what-the-build-has)). It is

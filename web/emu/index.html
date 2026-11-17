@@ -7,7 +7,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sillage · FM-1</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Cpath d=%22M2 3h12L8 13Z%22 fill=%22none%22 stroke=%22%23e7ae6b%22 stroke-width=%221.5%22/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Cpath d=%22M2 3h12L8 13Z%22 fill=%22none%22 stroke=%22%23ffffff%22 stroke-width=%221.5%22/%3E%3C/svg%3E">
 <meta name="description" content="Sillage, the eight-track groovebox for the M-VAVE FM-1, playable in your browser.">
 <style>
 /* DotGothic16 (SIL OFL 1.1, fonts/OFL.txt), cut to printable ASCII, for the knob labels */
@@ -23,8 +23,8 @@ body { margin: 0; color: var(--fg); font: 13px/1.6 -apple-system, BlinkMacSystem
 main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 32px; }
 .brand { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 0 0 22px; }
 .brand h1 { margin: 0; color: var(--fg); font: 500 clamp(20px, 5vw, 34px)/1 "Century Gothic", "Avenir Next", sans-serif; letter-spacing: .28em; }
-.brand svg { width: 30px; overflow: visible; color: #e7ae6b; animation: sillage-pulse 3s ease-in-out infinite; }
-@keyframes sillage-pulse { 0%, 100% { filter: drop-shadow(0 0 2px #e7ae6b40); } 50% { filter: drop-shadow(0 0 8px #e7ae6bcc); } }
+.brand svg { width: 30px; overflow: visible; color: #fff; animation: sillage-pulse 3s ease-in-out infinite; }
+@keyframes sillage-pulse { 0%, 100% { filter: drop-shadow(0 0 2px #adccdb40); } 50% { filter: drop-shadow(0 0 8px #adccdbcc); } }
 @media (prefers-reduced-motion: reduce) { .brand svg { animation: none; } }
 @media (orientation: portrait) and (max-width: 700px) { main { padding: 8px 8px 24px; } }
 a { color: inherit; }
@@ -403,7 +403,7 @@ async function switchOn() {
           if (m.leds) drawLights(lastLeds = m.leds, m.anim);
           if (m.sectors && !saveFlash(m.sectors) && !warned) {
             warned = true;
-            console.warn("Skiff: this browser does not keep the saves; they last until the page closes.");
+            console.warn("Sillage: this browser does not keep the saves; they last until the page closes.");
           }
         }
       };
@@ -412,7 +412,7 @@ async function switchOn() {
     await ac.resume();
     document.getElementById("start").hidden = true;
     go.textContent = "On";
-    if (ac.sampleRate !== 44100) console.warn(`Skiff: the browser plays at ${ac.sampleRate} Hz, the pitch is off by ${(1200 * Math.log2(ac.sampleRate / 44100)).toFixed(0)} cents.`);
+    if (ac.sampleRate !== 44100) console.warn(`Sillage: the browser plays at ${ac.sampleRate} Hz, the pitch is off by ${(1200 * Math.log2(ac.sampleRate / 44100)).toFixed(0)} cents.`);
     syncButtons();
     syncKeys();
     send({ type: "visible", on: !document.hidden });

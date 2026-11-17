@@ -1,6 +1,6 @@
 # Sillage · Sons usine classés par famille
 
-Catalogue des sons de Skiff 2.5.1 et des créations Sillage, classés par famille musicale. Les alias ne sont comptés qu’une fois.
+Catalogue des sons de Sillage, classés par famille musicale. Les alias ne sont comptés qu’une fois.
 
 **448 sons disponibles**. GRAIN est accessible sur les huit pistes. PHYS, LOFI, WHEEL et NOISE sont retirés.
 

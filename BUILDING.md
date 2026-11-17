@@ -1,4 +1,10 @@
-# Building Skiff
+# Building Sillage
+
+For the current Sillage 2.2 beta on Linux x86-64, set JIELI_TOOLCHAIN and use the project script from the repository root.
+
+    bash recompiler-fm1.sh
+
+The release and SMK-37 notes below describe the build tools inherited from the upstream fork. Sillage 2.2 beta targets the FM-1.
 
 The build makes three files in `build/`:
 

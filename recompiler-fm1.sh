@@ -10,6 +10,7 @@ import sys
 sys.path.insert(0, 'tools')
 import build
 build.generate = lambda: print('Using the generated headers from Sillage 2.2 beta')
+build.BOARD_PRODUCT['fm1'] = 'FM-1_946220'
 sys.argv = ['build.py', '--board', 'fm1', '--sdk', 'sdk']
 sys.exit(build.main())
 PY

@@ -4,9 +4,9 @@
 
 Groovebox à huit pistes pour le M-VAVE FM-1. 448 presets classés, séquenceur, mode SONG, scènes et mode PERFORM, mixeur live et éditeur USB.
 
-**[Télécharger le firmware Sillage 2.2 bêta (.fwsc)](https://github.com/lelacnoir-lab/Sillage/raw/refs/heads/main/downloads/Sillage-2.2-beta.fwsc)**
+**[Télécharger Sillage final pour le FM‑1 (.fwsc)](https://github.com/lelacnoir-lab/Sillage/raw/refs/heads/main/downloads/Sillage-2.2-beta-hub-test.fwsc)**
 
-Cette bêta reprend le fichier installable d'origine pour le M-VAVE FM-1. Les corrections d'affichage apportées au code depuis ce build seront intégrées lors d'une prochaine compilation.
+Version de test destinée au Firmware Hub, identifiant USB `FM-1_946220`. L’installation et le retour à un autre firmware restent à valider sur un FM-1 physique.
 
 - [Prise en main](Prise-en-main.md)
 - [Manuel de référence](Manuel-de-reference.md)

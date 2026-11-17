@@ -36,7 +36,7 @@ Les familles couvrent les basses, leads, nappes, claviers, plucks, batteries et 
 | **NOTES** | Piste mélodique (hauteur, position, durée, vélocité) ou grille de batterie (lane, frappe, accent, vélocité). PRESETS déplace la sélection dans la grille mélodique. |
 | **BAR** | Édite une mesure de la piste sélectionnée. Voir les commandes ci-dessous. |
 | **FEEL** | Règle le comportement des pas, dont la probabilité et les répétitions ou flams selon la grille et le type de piste. |
-| **PATTERN** | K1 longueur, K2 division, K3 swing, K4 gate. PRESETS règle le sens de lecture. |
+| **PATTERN** | K1 longueur (jusqu’à 64 pas), K2 division, K3 swing, K4 gate. PRESETS règle le sens de lecture. |
 | **GROOVE** | K1 Humanize, K2 Accent, K3 Timing, K4 Velocity. Les réglages sont propres à la piste. |
 | **GROOVE 2** | K1 ajoute des variations de decay. |
 | **AUTOMATION** | Consulte et édite les changements de paramètres enregistrés. Pour un verrou de paramètre, tiens un pas et tourne un potard compatible. |
@@ -44,7 +44,19 @@ Les familles couvrent les basses, leads, nappes, claviers, plucks, batteries et 
 
 Double-clique sur **REC** pour ouvrir les options d’enregistrement. La première page rassemble le métronome, le précompte et le niveau du clic. Avec SELECT, passe à **QUANTIZE**. **K4** sélectionne T1 à T8, **K1** choisit la grille et **K2** active ou désactive la quantisation. **TRACK** reprend la division de la piste. **D** signifie pointé et **T** triolet. La grille va de la blanche au trente-deuxième, avec des variantes pointées et triolets jusqu’au seizième.
 
-**Éditer une mesure.** À l’arrêt, ouvre SEQ → BAR. K1 choisit la mesure, K2 l’action et K3 la destination pour PASTE. L’écran indique la piste et les pas concernés. OCT+ applique l’action. Pour PASTE, CLEAR et DELETE, un deuxième OCT+ confirme et OCT− annule. DUPLICATE insère une copie, CLEAR vide la mesure et DELETE la retire. Les verrous et l’automation suivent l’édition d’une piste ou d’un kit entier. Sur DRUM et DrumX, K4 choisit KIT ou une lane. Sur une lane, l’édition porte sur les frappes et les accents. Pour modifier un pattern partagé, crée d’abord une copie avec COPY+ dans SONG.
+**Éditer une mesure dans un pattern.** Arrête la lecture et ouvre **SEQ → BAR** sur la piste voulue. **K1** sélectionne la mesure, **K2** choisit l’action et **K3** règle la destination de **PASTE**. L’écran indique la piste et les pas concernés.
+
+| Action | Effet |
+| --- | --- |
+| **COPY** | Copie la mesure sélectionnée. Appuie sur **OCT+** pour la mémoriser. |
+| **PASTE** | Remplace le contenu de la mesure de destination. La division, le nombre de pas, le type de piste (mélodique ou batterie) et le mode kit/lane doivent être compatibles. |
+| **DUPLICATE** | Insère une copie juste après la mesure sélectionnée. Il faut une mesure complète et assez de place dans la limite de 64 pas. |
+| **CLEAR** | Vide la mesure en conservant sa place et la longueur du pattern. |
+| **DELETE** | Retire la mesure et raccourcit le pattern. Pour vider une mesure unique, utilise **CLEAR**. |
+
+Appuie sur **OCT+** pour appliquer l’action. Pour **PASTE**, **CLEAR** et **DELETE**, appuie une seconde fois sur **OCT+** pour confirmer, ou sur **OCT−** pour annuler. Les verrous et l’automation suivent l’édition d’une piste ou d’un kit entier. Sur **DRUM** et **DrumX**, **K4** choisit **KIT** ou une lane. Sur une lane, l’édition porte sur les frappes et les accents. Passe en **KIT** pour **DUPLICATE** ou **DELETE**.
+
+Si le pattern est utilisé par plusieurs entrées de **SONG**, utilise d’abord **COPY+** dans **SONG** pour créer une copie indépendante.
 
 **Effacer une piste.** Sélectionne la piste avec ALGORITHM, maintiens SEQ et utilise **CLEAR** dans SEQ TOOLS.
 

@@ -43,8 +43,8 @@ All by Hügelton Instruments (Leo Kuroshita), in this tree:
 | The Hügelton Sample Pack: Felucca's drum sounds, made by `tools/gen_waves.py` (not CC0; the SLICE engine's BREAK was built from them through Skiff 1.1, the SLICE test's loop still is) | GPL-3.0-only | `tools/gen_waves.py` |
 | The Fukiai icon font (<https://github.com/hugelton/Fukiai>): the firmware's icons (rasterised at build time by `tools/gen_aa_icons.py`) and the web editor's | MIT | `web/fukiai.ttf`, `LICENSES/MIT-Fukiai.txt`, `web/FUKIAI-LICENSE.txt` |
 
-Skiff's changes to Felucca, marked (Skiff) in the sources, and its pictures (`docs/skiff.png` from the firmware's
-screen renders, `docs/controls.jpg` and `docs/keystrip.pdf` drawn by `tools/gen_panel_diagram.py`) are GPL-3.0-only
+Skiff's changes to Felucca, marked (Skiff) in the sources, and its upstream illustrations (including firmware screen renders and the diagrams drawn by
+`tools/gen_panel_diagram.py`) are GPL-3.0-only
 too. So are SLICE's BREAK and FUNK (`assets/breaks/`, after Skiff 1.1): loops cut from drum takes made with the YuE2 music
 model by Multimodal Art Projection (<https://github.com/multimodal-art-projection/YuE>), under its permission for
 individual creators to publish and distribute what it makes; no YuE2 weights or code are in this tree (how they were

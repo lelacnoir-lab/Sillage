@@ -6,7 +6,7 @@ Groovebox à huit pistes pour le M-VAVE FM-1. 448 presets classés, séquenceur,
 - [Manuel de référence](Manuel-de-reference.md)
 - [Publication GitHub Pages](MISE-EN-LIGNE-GITHUB.md)
 
-Firmware dérivé de Skiff par illuminus5 et de Felucca par Leo Kuroshita (Hügelton Instruments). Voir [licence](LICENSE), [provenance et licences des composants](LICENSING.md) et [README amont](README-SKIFF.md).
+Firmware dérivé de Skiff par illuminus5 et de Felucca par Leo Kuroshita (Hügelton Instruments). Voir [licence](LICENSE), [provenance et licences des composants](LICENSING.md) et [projet Skiff](https://github.com/illuminus5/skiff).
 
 ## Recompiler
 

@@ -1,17 +1,17 @@
 name: Bug report
-description: Something in Skiff doesn't work as it should (one bug per issue)
+description: Signaler un problème dans Sillage
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        One reproducible bug per issue, on Skiff (not Felucca). Ideas and questions are welcome as issues too: say which it is in the title.
+        Décris un problème reproductible par ticket. Indique si tu utilises le FM-1 physique, la démo ou l’éditeur USB.
   - type: input
     id: version
     attributes:
-      label: Skiff version
+      label: Sillage version
       description: Hold HOME > ABOUT on the FM-1
-      placeholder: "v1.0"
+      placeholder: "2.2 bêta"
     validations:
       required: true
   - type: input

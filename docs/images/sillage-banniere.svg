@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="288" viewBox="0 0 900 288" role="img" aria-labelledby="title">
+  <title id="title">Sillage</title>
+  <rect width="900" height="288" fill="#091521"/>
+  <path d="M68 108h42l-21 36Z" fill="none" stroke="#D8B66F" stroke-width="4" stroke-linejoin="round"/>
+  <text x="140" y="140" fill="#D8B66F" font-family="system-ui, sans-serif" font-size="44" letter-spacing="10">SILLAGE</text>
+  <text x="68" y="200" fill="#A9BFCC" font-family="system-ui, sans-serif" font-size="23">Groovebox à huit pistes pour le M-VAVE FM-1.</text>
+</svg>

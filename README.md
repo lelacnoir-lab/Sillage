@@ -1,6 +1,6 @@
-# Sillage 2.2 bêta
+# Sillage
 
-![Sillage 2.2 bêta — triangle blanc sur fond bleu nuit](docs/images/sillage-banniere.png)
+![Sillage, lettres et triangle dorés sur fond bleu nuit](docs/images/sillage-banniere.svg)
 
 Groovebox à huit pistes pour le M-VAVE FM-1. 448 presets classés, séquenceur, mode SONG, scènes et mode PERFORM, mixeur live et éditeur USB.
 

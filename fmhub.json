@@ -3,5 +3,6 @@
   "kinds": [
     "groove"
   ],
-  "sounds": "licensed: Felucca/Skiff synthesized assets (GPL-3.0-only), VSCO-2 CE/VCSL and Virtuosity Drums (CC0 1.0). See LICENSING.md and asset credits."
+  "sounds": "licensed: Felucca/Skiff synthesized assets (GPL-3.0-only), VSCO-2 CE/VCSL and Virtuosity Drums (CC0 1.0). See LICENSING.md and asset credits.",
+  "image": "docs/sillage-card.jpg"
 }

@@ -1713,6 +1713,7 @@ static void mix_block(int32_t *out, uint32_t n)
         throw_off();                                    /* (Skiff) .. and off: nothing else sees them */
     if (perf)                                           /* ((2.5) a stereo delay: THROW and DUB left and right) */
         AUDIO_FAR(perf_pre)(mix_l, mix_r, send_d, song.g[G_DMODE] != DM_MONO ? send_e : 0, send_r, n);
+    if (perf) AUDIO_FAR(perf_filter_dry)(mix_l, mix_r, n);
     fx_buses(send_c, send_d, send_e, send_r, wet, n);
     if (hl.side)
         rev_side_mix(mix_l, mix_r, n);                  /* HALL, (2.5) a stereo delay and chorus: stereo */

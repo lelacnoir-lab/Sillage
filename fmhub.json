@@ -1,8 +1,10 @@
 {
-  "what": "Sillage is an 8-track groovebox for the M-VAVE FM-1 with 448 presets and 4-band EQ per track. Master processing boosts the mix and widens the stereo image. Copy, paste, duplicate or clear bars within a pattern using the 64-step sequencer.",
+  "what": "Sillage: 8 tracks, 448 presets, 64-step sequencing, per-track 4-band EQ and master processing. Latched live FX with a dry-only filter. Web editor with sound families, larger controls and A/B comparison. Based on Skiff and Felucca.",
   "kinds": [
     "groove"
   ],
   "sounds": "licensed: Felucca/Skiff synthesized assets (GPL-3.0-only), VSCO-2 CE/VCSL and Virtuosity Drums (CC0 1.0). See LICENSING.md and asset credits.",
-  "image": "docs/sillage-card.jpg"
+  "image": "docs/sillage-card.jpg",
+  "author": "T-TAURI",
+  "editor": "https://lelacnoir-lab.github.io/Sillage/editor.html"
 }

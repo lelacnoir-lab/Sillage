@@ -1,0 +1,10 @@
+{
+  "families": true,
+  "exportPreservesFamily": true,
+  "AB": true,
+  "mixAndSequencePreserved": true,
+  "trackChangeGuard": true,
+  "drumXKit": true,
+  "FM6": true,
+  "hardwareValidated": false
+}

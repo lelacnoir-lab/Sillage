@@ -20,25 +20,25 @@ jobs:
         run: |
           bash recompiler-fm1.sh
           mkdir -p build/hub-candidate
-          cp build/felucca.fwsc build/hub-candidate/Sillage-2.2-beta-hub-test.fwsc
+          cp build/felucca.fwsc build/hub-candidate/Sillage-2.2.1-hub-test.fwsc
           python3 - <<'PY'
           from pathlib import Path
-          data = Path("build/hub-candidate/Sillage-2.2-beta-hub-test.fwsc").read_bytes()
+          data = Path("build/hub-candidate/Sillage-2.2.1-hub-test.fwsc").read_bytes()
           identity = "".join(
               chr((marker - i - 1) & 0xFF)
               for i in range(20)
               if (marker := data[i * 0x30 + 0x2F]) != 0x7D
           )
-          assert identity == "FM-1_946220", identity
+          assert identity == "FM-1_946221", identity
           assert b"FELUCCA-LOADER-1" in data, "Update loader marker missing"
           print(f"Package identity verified: {identity}")
           PY
           cd build/hub-candidate
-          sha256sum Sillage-2.2-beta-hub-test.fwsc > SHA256SUMS.txt
+          sha256sum Sillage-2.2.1-hub-test.fwsc > SHA256SUMS.txt
           cat SHA256SUMS.txt >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
-          name: Sillage-2.2-beta-hub-test
+          name: Sillage-2.2.1-hub-test
           path: build/hub-candidate/
           if-no-files-found: error
           retention-days: 30

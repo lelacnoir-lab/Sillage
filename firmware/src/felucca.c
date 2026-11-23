@@ -42,11 +42,11 @@
 #if BOARD_SMK37
 #define FELUCCA_ID SMK_MODEL "_700"   /* package identity (build.py: the .fwsc marker string) */
 #else
-#define FELUCCA_ID "FM-1_700"    /* package identity (build.py: the .fwsc marker string) */
+#define FELUCCA_ID "FM-1_946221"    /* package identity (build.py: the .fwsc marker string) */
 #endif
 #endif
 #ifndef FELUCCA_VERSION
-#define FELUCCA_VERSION "v2.5.1"       /* Skiff's; shown in the menu, the console and the editor; build.py --release X.Y */
+#define FELUCCA_VERSION "Sillage 2.2.1 FX test"       /* Skiff's; shown in the menu, the console and the editor; build.py --release X.Y */
 #endif
 #if FELUCCA_OTA && !FELUCCA_FLASH
 #error "FELUCCA_OTA needs FELUCCA_FLASH"

@@ -7,3 +7,6 @@ design/out/
 
 # (Skiff 2.0) the converter's wasm, a dev copy of build/conv/conv.wasm (web/conv/build.sh)
 web/conv/conv.wasm
+
+# Local/release packaging output
+/dist/

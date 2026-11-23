@@ -1,0 +1,25 @@
+ÉDITEUR SILLAGE — VERSION LOCALE
+
+Ouvre « Editeur Sillage.html » dans Chrome ou Edge, puis connecte ton FM-1 avec le bouton Connecter.
+Aucun firmware n'est installé par cette page.
+
+SON
+Les commandes du son sélectionné sont regroupées par source, filtre, enveloppes, LFO, modulation et effets. Les boutons en haut donnent un accès direct aux modules. Seuls les paramètres réellement exposés par le FM-1 sont affichés.
+
+BIBLIOTHÈQUE
+Les presets d'usine sont lus sur le FM-1 connecté. Filtre par famille, moteur ou recherche par nom. Les familles proviennent des tags du firmware.
+Dans la bibliothèque personnelle, choisis une famille pour le son sélectionné si nécessaire ; ce classement est enregistré dans le navigateur et conservé dans les exports JSON.
+
+COMPARAISON A/B
+1. Sur la bonne piste, clique sur « Prendre A ».
+2. Modifie les réglages : tu prépares B.
+3. Clique A pour retrouver la référence, puis B pour revenir aux modifications.
+« Fermer A/B » abandonne les deux références et conserve le son actuellement entendu. Un chargement de preset ou un changement de piste met fin à cette comparaison.
+Il n'y a pas de sauvegarde automatique sur le FM-1. Volume, panoramique, mutes, groove, notes du séquenceur et bus globaux restent en place.
+FM6 inclut ses opérateurs ; Drum-X inclut les réglages de tous les instruments du kit.
+
+Les tests de protocole simulés passent ; cette version de l’éditeur a également été validée par le mainteneur sur son FM-1.
+Les modifications de présentation et d'organisation restent côté éditeur : aucun traitement audio supplémentaire n'est ajouté au firmware.
+
+
+Éditeur public : https://lelacnoir-lab.github.io/Sillage/editor.html

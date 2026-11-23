@@ -1,0 +1,7 @@
+{
+  "base": "Sillage 2.2 beta",
+  "reverbBitIdenticalCases": 324,
+  "filterDryIsolation": true,
+  "filterHeadroom": true,
+  "hardwareValidated": false
+}

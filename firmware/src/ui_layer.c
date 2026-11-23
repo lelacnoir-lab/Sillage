@@ -304,7 +304,7 @@ static uint32_t layer_gesture(uint32_t now, uint32_t combo)
         if (!(*t0 & (LY_OPEN | LY_DEAD)) && (combo || held)) {
             *t0 |= LY_OPEN | (combo ? LY_COMBO : 0u);
             layer_opened(l);
-            if (l == LAYER_PERF && held)
+            if ((l == LAYER_PERF || l == LAYER_FX) && held)
                 layer_home_lock();
         }
         return 0;

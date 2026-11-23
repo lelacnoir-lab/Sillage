@@ -1,0 +1,2545 @@
+--- a/firmware/hal/fm1_input.h
++++ b/firmware/hal/fm1_input.h
+@@ -172,6 +172,8 @@
+     uint32_t virt, vtap, vack;   /* ((2.2) MENU > MIDI > REMOTE, seq.c midi_control.c: buttons held from MIDI (virt), and
+                                   * pressed (vtap toggles; vack: the scan's press took it, so a tap shorter than a
+                                   * frame still lands); closed as the contacts are, through the same debounce */
++    uint32_t vbtn, vkey, vktap, vkack;   /* ((2.7) the Screen tab's panel, editor.c ed_panel: buttons held (with vtap
++                                  * as REMOTE's) and keys held, a key's press as vtap's (vktap, vkack) */
+     uint8_t raw[FM1_NCOL];       /* last frame, packed rows, 1 = closed */
+     uint8_t cnt[FM1_NKEY];       /* frames in a row against the debounced state */
+     uint32_t note_t0[27];        /* TIMER4 tick of the first scan that saw note key n closed */
+@@ -291,7 +293,10 @@
+     uint32_t note = id >= 14u, bit = note ? 1u << (id - 14u) : 1u << id;
+     uint32_t on = ((note ? fm1_in.notes : fm1_in.buttons) & bit) != 0u;
+     if (!note)
+-        closed |= ((fm1_in.virt | (fm1_in.vtap ^ fm1_in.vack)) >> id) & 1u;   /* ((2.2) REMOTE's) */
++        closed |= ((fm1_in.virt | fm1_in.vbtn | (fm1_in.vtap ^ fm1_in.vack)) >> id) & 1u;   /* ((2.2) REMOTE's, (2.7) the
++                                                                                         * Screen tab's) */
++    else
++        closed |= ((fm1_in.vkey | (fm1_in.vktap ^ fm1_in.vkack)) >> (id - 14u)) & 1u;
+     if (closed == on) {                            /* agrees with the state: start over */
+         *c = 0;
+         return;
+@@ -304,6 +309,7 @@
+     if (note) {
+         if (!on) {
+             uint32_t d = FM1_INPUT_NOW() - fm1_in.note_t0[id - 14u];
++            fm1_in.vkack = (fm1_in.vkack & ~bit) | (fm1_in.vktap & bit);   /* ((2.7) the Screen tab's tap: pressed) */
+             fm1_in.notes_pressed |= bit;
+             fm1_in_stat.press_n++;
+             fm1_in_stat.press_sum += d;
+--- a/firmware/src/audio.c
++++ b/firmware/src/audio.c
+@@ -70,6 +70,7 @@
+ {
+     uint32_t p, i;
+     voice_t *best = 0;
++    CAST(cast_ev('s'));                                 /* (Skiff Studio: the copy can't know the unit's load) */
+     for (p = 0; p < NPART; p++)
+         for (i = 0; i < NVOICE; i++) {
+             voice_t *v = &trk[p].v[i];
+--- a/firmware/src/bank.c
++++ b/firmware/src/bank.c
+@@ -1951,6 +1951,89 @@
+     }
+     return song_snd_put(k, e, b);
+ }
++/* Copy one complete song column. New records are prepared before any destination
++ * entry is published, so a failed write leaves the arrangement untouched. */
++static int song_copy_all(uint32_t source, uint32_t dest)
++{
++    uint8_t ids[NTRK], reps[NTRK], sounds[NTRK][2];
++    uint64_t taken = 0;
++    uint32_t k, created = 0, populated = 0;
++    if (transport_busy()) {
++        ui_message("STOP TO COPY ALL");
++        return 1;
++    }
++    if (!BK_ON || source >= NENT || dest >= NENT || source == dest) {
++        ui_message("CHOOSE ANOTHER DEST");
++        return 1;
++    }
++    bank_poll();
++    for (k = 0; k < NTRK; k++) {
++        if (lists.ent[k][dest][0] || (dest && ent_link(k, dest - 1u))) {
++            ui_message("DESTINATION NOT EMPTY");
++            return 1;
++        }
++        if (ent_link(k, source) || (source && ent_link(k, source - 1u))) {
++            ui_message("CHAIN: USE TRACK COPY+");
++            return 1;
++        }
++        uint32_t id = ent_pat(k, source);
++        int live = lists.cur[k] == source &&
++                   (id != PAT_NONE || !seq_is_empty(&trk[k]) || motion_count(&trk[k]));
++        ids[k] = lists.ent[k][source][0];
++        reps[k] = lists.ent[k][source][1];
++        memcpy(sounds[k], lists.snd[k][source], 2);
++        if (id == PAT_NONE && !live)
++            continue;
++        uint32_t free_id = pool_free_after(id == PAT_NONE ? NPAT - 1u : id, taken);
++        if (free_id == NPAT) {
++            ui_message("PATTERNS FULL");
++            return 1;
++        }
++        ids[k] = (uint8_t)(free_id + 1u);
++        taken |= (uint64_t)1u << free_id;
++        populated |= 1u << k;
++        if ((live && !trk_rec(k)) || (!live && pat_read(id, bk_rec))) {
++            ui_message("SOURCE READ FAILED");
++            return 1;
++        }
++    }
++    if (!populated) {
++        ui_message("NOTHING TO COPY");
++        return 1;
++    }
++    for (k = 0; k < NTRK; k++) {
++        if (!(populated & (1u << k)))
++            continue;
++        uint32_t id = ent_pat(k, source);
++        int live = lists.cur[k] == source;
++        if ((live && !trk_rec(k)) || (!live && pat_read(id, bk_rec)) || pat_keep_now(ids[k] - 1u, bk_rec))
++            goto failed;
++        created |= 1u << k;
++    }
++    while (pend_free() < PEND_N)
++        if (pat_flush_one())
++            goto failed;
++    fm1_irq_off();
++    for (k = 0; k < NTRK; k++) {
++        lists.ent[k][dest][0] = ids[k];
++        lists.ent[k][dest][1] = reps[k];
++        memcpy(lists.snd[k][dest], sounds[k], 2);
++    }
++    bk.gen++;
++    fm1_irq_on();
++    char message[] = "COPIED ALL A TO B";
++    message[11] = (char)('A' + source);
++    message[16] = (char)('A' + dest);
++    ui_message(message);
++    return 0;
++failed:
++    memset(bk_rec, 0, BK_REC);
++    for (k = 0; k < NTRK; k++)
++        if (created & (1u << k))
++            (void)pat_keep_now(ids[k] - 1u, bk_rec);
++    ui_message("COPY FAILED: DEST EMPTY");
++    return 1;
++}
+ static void song_oct(void)
+ {
+     uint32_t p = song_pick();
+--- /dev/null
++++ b/firmware/src/cast.c
+@@ -0,0 +1,233 @@
++/* SPDX-License-Identifier: GPL-3.0-only */
++/* (Skiff Studio) the cast: a copy of Skiff in the browser (the web build, as Try Skiff) replays what this unit takes,
++ * in the order and at the moments it takes it, and so draws the same screen (web/EDITOR_PROTOCOL.md "Cast"; the copy:
++ * web/emu/cast_follow.c). The hooks (CAST(..), core.h) put records into a ring: the audio ISR's
++ * directly, the main loop's with the interrupts off. While the editor WATCHes, the main loop sends them as SysEx,
++ * cmd 83, a record a frame: a sequence number (0..63; 127: the ring overflowed, the cast stopped), then the record's
++ * four 32-bit words as u32 (5 bytes of 7 bits each, LSB first, as the backup's). A record:
++ *   ticks         TIMER4 (24 MHz) when it was put
++ *   blocks|type   the audio blocks rendered since power-on (events_block, 24 bits) | its type << 24
++ *   a, b          its own:
++ *   B  begin    ms, the MASTER knob (master.c) | 1 << 31 with the second core running
++ *   F  frame    the battery's reading, MASTER's: a main-loop frame starts (main.c, after its readings)
++ *   e  drawn    -: the frame is drawn, the main loop reads the panel again
++ *   T  take     buttons | pressed << 14, keys: what ui_input saw and took (then U, keys struck, when it took any)
++ *   K  knob     role, steps: the detents panel_enc took (REMOTE's come with their MIDI)
++ *   N  keys     keys, buttons: what the audio ISR saw change (keyboard_block)
++ *   M  MIDI     the USB-MIDI packet, its ms | source << 24: as the audio ISR took it (events_block)
++ *   R  request  the editor command handled (the copy runs the same request there)
++ *   C  check    a hash of the music and the UI, once a second, after a frame's F: the copy compares its own; the
++ *               sound's (cast_sound, 0: not taken)
++ *   s  shed, o  MIDI overflow (what the unit's load and its queue did, which the copy can't know)
++ * The SMK-37 (B's CAST_SMK bit; its 18 buttons don't fit T's 14):
++ *   T  take     buttons, keys | pass << 27; U  struck, pressed (when either)
++ *   X  outer    the outer-key event (smk_extkey_take), buttons: as the audio ISR took it (seq.c kb_outer)
++ *   V  velocity key, its velocity: a key struck (keyboard_block, after its N)
++ *   D  pad      the step tap (smk_padq_take), as smk_ui_frame took it
++ *   A  analog   faders (7 bits each) | settled << 28, wheels | pedal << 20 (10 bits each): smk_ui_frame's reading,
++ *               when it changed
++ * The copy renders to a record's block count, sets its clock to the record's ticks and does what the record says. */
++#define CAST_VER 4u                    /* (B's bits 24..30) the records' layout: 3 = F's cpu, P; 4 = C's sound (0: t2) */
++#define CAST_SMK 0x40u                 /* (in CAST_VER's bits) the SMK-37's layout: T U X V D A as above */
++static uint32_t cast_boot __attribute__((section(".noinit")));   /* CAST_BOOT: restarted for a cast (cast_cmd 2) */
++#define CAST_BOOT 0x43535442u                                     /* "CSTB" */
++static int cast_audio_late(void) { return cast_boot == CAST_BOOT; }   /* (core.h CAST_AUDIO_LATE: main.c's boot) */
++
++static __attribute__((noinline)) void cast_rec(uint32_t type, uint32_t a, uint32_t b)
++{
++    uint32_t isr = felucca_dbg.in_audio, *r;
++    if (cast.on != 1u)
++        return;
++    if (!isr)
++        fm1_irq_off();
++    if (cast.w - cast.r >= CAST_N) {
++        cast.on = 2;                                   /* full: the copy can't follow from here */
++    } else {
++        r = &cast.q[cast.w++ % CAST_N * 4u];
++        r[0] = fm1_ticks();
++        r[1] = (cast.blocks & 0xFFFFFFu) | type << 24;
++        r[2] = a;
++        r[3] = b;
++    }
++    if (!isr)
++        fm1_irq_on();
++}
++static __attribute__((noinline)) void cast_take(uint32_t pressed, uint32_t struck)   /* ui_input, every pass */
++{
++    uint32_t b = fm1_in.buttons, k = fm1_in.notes;
++    cast.pass++;
++    if (!(pressed | struck | (b ^ cast.lb) | (k ^ cast.ln)))
++        return;
++    cast.lb = b;
++    cast.ln = k;
++#if BOARD_SMK37
++    cast_rec('T', b, k | (uint32_t)cast.pass << 27);
++    if (pressed | struck)
++        cast_rec('U', struck, pressed);
++#else
++    cast_rec('T', b | pressed << 14, k | (uint32_t)cast.pass << 27);
++    if (struck)
++        cast_rec('U', struck, 0);
++#endif
++}
++#if BOARD_SMK37
++/* smk_ui.c smk_ui_frame, after its reading (smk_rd): the faders, the wheels and the pedal, when they changed */
++static __attribute__((noinline)) void cast_smk(void)
++{
++    uint32_t a = (uint32_t)smk_rd.ready << 28, w, j;
++    for (j = 0; j < 4u; j++)
++        a |= (uint32_t)(smk_rd.fader[j] & 127u) << (7u * j);
++    w = (smk_rd.wheel[0] & 1023u) | (smk_rd.wheel[1] & 1023u) << 10 | (uint32_t)(smk_rd.pedal & 1023u) << 20;
++    if (cast.on == 1u && (a != cast.la || w != cast.lw)) {
++        cast.la = a;
++        cast.lw = w;
++        cast_rec('A', a, w);
++    }
++}
++#endif
++/* the music (each track's values and steps, the globals, the lists) and what the UI shows, hashed */
++static __attribute__((noinline)) uint32_t cast_hash(void)
++{
++    uint32_t h = song.sel | (uint32_t)ui.page << 4 | (uint32_t)ui.home << 12 | (uint32_t)ui.menu << 14 |
++                 (uint32_t)ui.layer << 16 | (uint32_t)ui.cursor << 24, k;
++    for (k = 0; k < NTRK; k++)
++        h = h * 31u + st_crc32(trk[k].p, sizeof trk[k].p) + st_crc32(trk[k].step, sizeof trk[k].step);
++    return h * 31u + st_crc32(song.g, sizeof song.g) + st_crc32(&lists, sizeof lists);
++}
++/* (t5) the sound: the last SCOPE_N samples of the output (audio.c's scope), oldest first, hashed; 0: the audio ISR ran
++ * since F (the copy compares at F's block), not checked */
++static __attribute__((noinline)) uint32_t cast_sound(void)
++{
++    uint32_t w = scope_w, i, h = 2166136261u;
++    for (i = 0; i < SCOPE_N; i++)
++        h = (h ^ (uint16_t)scope_buf[(w + i) & (SCOPE_N - 1u)]) * 16777619u;
++    return cast.blocks == cast.pb ? h | 1u : 0u;
++}
++static __attribute__((noinline)) void cast_frame(int32_t batt)
++{
++    cast_rec('F', ((uint32_t)batt & 0x7FFu) | ((uint32_t)cast.madc & 0x7FFu) << 11 | (uint32_t)ui_cpu << 22, fm1_ms);
++    cast_rec('H', ui_audio_peak, 0u);
++    cast.px = 2166136261u;
++    cast.pc = 0;
++    cast.pb = cast.blocks;
++    if (cast.on == 1u && fm1_ms - cast.chk >= 1000u) {
++        uint32_t s = cast_sound();
++        cast.chk = fm1_ms;
++        cast_rec('C', cast_hash(), s);
++    }
++}
++
++/* main.c before ui_draw (piece 0: the draw reads what changed) and gfx.c cv_begin once the last piece's pixels are out
++ * (a canvas piece begins): stamped when the audio ran since the frame's F or the last stamp (P: its index in the
++ * frame), so the copy draws from there after the same blocks; (t5) ui_graph.c's scope too, where it reads the sound */
++static __attribute__((noinline)) void cast_piece(void)
++{
++    uint32_t k = cast.pc++;
++    if (cast.on == 1u && cast.blocks != cast.pb) {
++        cast.pb = cast.blocks;
++        cast_rec('P', k, 0u);
++    }
++#ifdef ED_HDR0
++    cast_flush();             /* (out between the pieces too: a MENU or EDIT frame while playing, ~95 ms, made ~10
++                               * records and the main loop's one ed_service a frame sent ~3: the ring overflowed) */
++#endif
++}
++/* lcd.c (and the web build's): what goes to the screen, hashed (FNV-1a) into the frame's e: a fill's place and colour, a
++ * blit's place and pixels; the copy hashes its own the same way */
++static __attribute__((noinline)) void cast_px(uint32_t xywh, uint32_t c, const uint16_t *p, uint32_t n)
++{
++    uint32_t h = cast.px;
++    if (cast.on != 1u)
++        return;
++    h = (h ^ xywh) * 16777619u;
++    h = (h ^ c) * 16777619u;
++    while (n--)
++        h = (h ^ *p++) * 16777619u;
++    cast.px = h;
++}
++
++#ifdef ED_HDR0                                         /* (the unit: editor.c's SysEx) */
++/* ED_CAST: op 0 stop, 1 start (while WATCHed), 2 restart the unit (its music stored first) and cast from its first frame
++ * (cast_boot_hold); the reply: op, the cast on (1), rc (1: the music not stored yet, ask again) */
++static __attribute__((noinline)) void cast_cmd(uint32_t op)
++{
++    uint32_t rc = 0;
++    if (op == 1u && ed_w.on && cast.on != 1u) {
++        cast.w = cast.r = 0;
++        cast.lb = fm1_in.buttons;
++        cast.ln = fm1_in.notes;
++        cast.chk = fm1_ms;
++#if BOARD_SMK37
++        cast.la = cast.lw = ~0u;                      /* (the first frame's A: always) */
++#define CAST_LAYOUT (CAST_VER | CAST_SMK)
++#else
++#define CAST_LAYOUT CAST_VER
++#endif
++        cast.on = 1;
++        cast_rec('B', fm1_ms, (uint32_t)master_knob | CAST_LAYOUT << 24 | (uint32_t)C1_ON() << 31);
++    } else if (op == 0u) {
++        cast.on = 0;
++#if FELUCCA_PANEL
++        fm1_in.vbtn = fm1_in.vkey = 0;                 /* ((2.7) and the panel's presses let go) */
++#endif
++    } else if (op == 2u) {
++        rc = autosave_sig() != as.saved;              /* the copy starts from the stored music: store it first */
++        if (rc)
++            autosave_soon();
++        else
++            cast.reboot = fm1_ms | 1u;
++    }
++    ed_b(op);
++    ed_b(cast.on == 1u);
++    ed_b(rc);
++}
++/* main loop (ed_service) and between a draw's pieces (cast_piece): the records out as SysEx while there is room (about
++ * three: ed_room); watching ended (3 s without a request, a USB
++ * reset): the cast too; a restart asked for, once its reply has gone (the chip's reset lets go of USB) */
++static __attribute__((noinline)) void cast_flush(void)
++{
++    if (cast.reboot && fm1_ms - (cast.reboot & ~1u) > 100u) {
++        cast_boot = CAST_BOOT;
++        bootguard.pending = 0;                         /* (an intentional reset: not a failed boot, main.c) */
++        fm1_audio_stop();
++        fm1_reboot();
++    }
++    if (!ed_w.on) {
++        cast.on = 0;
++#if FELUCCA_PANEL
++        fm1_in.vbtn = fm1_in.vkey = 0;                 /* ((2.7) the Screen tab's panel lets go: editor.c ed_panel) */
++#endif
++    }
++    while (cast.on && ed_room() && (cast.on == 2u || cast.r != cast.w)) {
++        const uint32_t *q = &cast.q[cast.r % CAST_N * 4u];
++        uint32_t i;
++        ed_begin(ED_CAST);
++        if (cast.on == 2u) {
++            ed_b(127);
++            cast.on = 0;
++        } else {
++            ed_b(cast.seq++ & 63u);
++#pragma clang loop unroll(disable)
++            for (i = 0; i < 20u; i++)                  /* (each word as the backup's u32: 5 x 7 bits, LSB first) */
++                ed_b(q[i / 5u] >> (i % 5u * 7u));
++            cast.r++;
++        }
++        ed_send();
++    }
++}
++/* main.c, after the splash: restarted for a cast, the splash stays until the editor starts it (10 s at most: the
++ * computer finds the unit's USB again first) */
++static __attribute__((noinline)) void cast_boot_hold(void)
++{
++    uint32_t t0 = fm1_ms;
++    if (cast_boot != CAST_BOOT)
++        return;
++    cast_boot = 0;
++    while (cast.on != 1u && fm1_ms - t0 < 10000u) {
++        fm1_wdt_feed();
++        ed_service();
++    }
++}
++#else
++static void cast_boot_hold(void) {}                    /* (the web build: main.c's loop is not its own) */
++#endif
+--- a/firmware/src/core.h
++++ b/firmware/src/core.h
+@@ -588,6 +588,9 @@
+ 
+ static track_t trk[NTRK];        /* the instrument: six parts */
+ static song_t song;
++static uint32_t ui_audio_peak;
++static uint8_t ui_cpu;           /* the load (%) the MENU shows: taken at each frame's start (main.c), so a frame draws one
++                                  * value ((Skiff Studio) the cast's F tells the copy) */
+ /* the selected track. (Skiff 2.0) A pointer kept with song.sel, so a use is a load, not song.sel times the track's
+  * size: song.sel is only ever set through sel_set (the tests too) */
+ static track_t *tsel = trk;
+@@ -630,6 +633,67 @@
+ 
+ /* ----------------------------------------------------------- system --- */
+ #define RING_PUBLISH() __asm__ volatile("" ::: "memory")   /* slot store before the index update */
++/* (Skiff Studio) the cast (cast.c): what the main loop and the audio ISR take, stamped, so that a copy of Skiff in the
++ * browser takes the same at the same moments and draws the same screen. Its hooks are CAST(..): nothing without
++ * FELUCCA_CAST. Its state is in .pool (off the audio ISR's merged globals) */
++#ifndef FELUCCA_CAST
++#define FELUCCA_CAST 0
++#endif
++#if FELUCCA_CAST
++#define CAST_N 64u                         /* the ring, records (a power of 2) of four words */
++static struct {
++    uint8_t on, seq;                       /* on: 1 casting, 2 the ring overflowed (the copy must resync) */
++    uint8_t pass;                          /* ui_input's passes, counted (T and K say which pass took them) */
++    uint16_t pc;                           /* the frame's canvas pieces begun (cast_piece) */
++    uint32_t pb;                           /* the blocks at the frame's F or its last P */
++    uint32_t px;                           /* the pixels sent since the frame began, hashed (lcd.c cast_px; e says it) */
++    uint32_t w, r;                         /* records put, records sent */
++    uint32_t blocks;                       /* audio blocks since power-on (events_block) */
++    int32_t madc;                          /* MASTER's last reading (master_poll) */
++    uint32_t lb, ln, chk, reboot;          /* the buttons and keys last told, the last check's ms, a restart's ms | 1 */
++    uint32_t q[CAST_N * 4u];
++#if BOARD_SMK37
++    uint32_t la, lw;                       /* (SMK) the faders and the wheels, the pedal last told (A, cast_smk) */
++} cast __attribute__((section(".ramx")));  /* (SMK: the pool keeps its 8 KiB spare; .ramx is zeroed at boot too) */
++#else
++} cast __attribute__((section(".ramx")));
++#endif
++static void cast_rec(uint32_t type, uint32_t a, uint32_t b);   /* a record, stamped (cast.c) */
++#define cast_ev(type) cast_rec((type), 0u, 0u)
++static void cast_take(uint32_t pressed, uint32_t struck);
++static void cast_frame(int32_t batt);
++static void cast_px(uint32_t xywh, uint32_t c, const uint16_t *p, uint32_t n);
++static void cast_piece(void);
++static void cast_flush(void);
++static void cast_cmd(uint32_t op);
++static void cast_boot_hold(void);
++#if BOARD_SMK37
++static void cast_smk(void);
++#endif
++#if FELUCCA_WEB
++static void web_cast_block(void);          /* (the browser's copy: what the unit's ISR took at this block) */
++#define CAST_BLOCK() (cast.blocks++, web_cast_block())
++#else
++#define CAST_BLOCK() (cast.blocks++)
++#endif
++#define CAST(x) (x)
++#ifndef CAST_READ                          /* (the sound read in the middle of a piece, ui_graph.c's scope: stamped too) */
++#define CAST_READ() cast_piece()
++#endif
++#ifndef CAST_AUDIO_LATE                    /* (main.c) restarted for a cast: the music in before the audio ISR first runs,
++                                            * as the copy's: halves rendered before it, with felucca_init's sounds, moved
++                                            * the LFOs and the shared generator (rng) where the copy can't follow */
++static int cast_audio_late(void);
++#define CAST_AUDIO_LATE() cast_audio_late()
++#endif
++#else
++#define CAST(x) ((void)0)
++#define CAST_BLOCK() ((void)0)
++#define CAST_READ() ((void)0)
++#define CAST_AUDIO_LATE() 0
++#endif
++#define FELUCCA_PANEL (FELUCCA_CAST && !BOARD_SMK37)   /* (2.7) the Screen tab's panel, PANEL cmd 84 (editor.c ed_panel): the
++                                                     * FM-1's (its virtual contacts: hal/fm1_input.h vbtn, vkey) */
+ static volatile uint32_t fm1_ms;  /* milliseconds since boot (TIMER4-based, TIMER5 ISR in main.c) */
+ /* boot-loop guard (main.c): two boots in a row that die in the first 30 s -> UBOOT */
+ #define BOOTGUARD_MAGIC 0x42475244u
+--- a/firmware/src/editor.c
++++ b/firmware/src/editor.c
+@@ -22,6 +22,7 @@
+        ED_MOTION = 64, ED_BACKUP_LIST, ED_BACKUP_GET, ED_BACKUP_PUT };                              /* v6: song chain */
+ 
+ enum { ED_KIT_GET = 74, ED_KIT_PUT };                 /* (Skiff W3) the DRUM-X kit (INFO 4B 01 8) */
++enum { ED_CAST = 83, ED_PANEL };
+ enum { ED_SMP_MIX = 81 };                             /* (Skiff, #21) a user slot's sounds' LEVEL REV DLY (INFO 57 01 bit 5) */
+ 
+ /* ED_NAMES must fit every name and the two page titles in one reply. */
+@@ -431,6 +432,14 @@
+         return ed_song_args_ok(cmd, a, n);
+     case ED_KIT_GET:                                   /* (Skiff W3) a lane; a lane and its 15 values, each in range */
+         return n == 1u && a[0] < 8u;
++#if FELUCCA_CAST
++    case ED_CAST:
++        return n == 1u;
++#if FELUCCA_PANEL
++    case ED_PANEL:                                     /* (2.7) the held buttons and keys, or a knob's turns */
++        return (n == 7u && !a[0]) || (n == 3u && a[0] == 1u && a[1] < NE);
++#endif
++#endif
+     case ED_KIT_PUT: {
+         uint32_t i;
+         if (n != 16u || a[0] >= 8u || a[1] > 3u || a[2] > DXF_HP || a[3] > 1u || a[4] > 3u || a[5] > 1u)
+@@ -497,6 +506,34 @@
+     ed_send();
+ }
+ 
++#if FELUCCA_PANEL
++/* (2.7) PANEL, the Screen tab's panel (INFO 59 01 bit 1; the reply: the op, as the unit takes one SysEx frame at a
++ * time: usb.c sx_ready). Op 0: the buttons held (2 x 7 bits, by label:
++ * panel.c B_*) and the keys held (4 x 7 bits, F3 up), taken as the panel's own contacts through the scan's debounce
++ * (hal/fm1_input.h vbtn, vkey; a press shorter than a scan still lands: vtap, vktap). Op 1: a knob's turns, role
++ * (panel.c EN_*) and steps (7 bits, two's complement), as REMOTE's (panel.c rmt_steps). The page's copy runs it too:
++ * the turns count there, the contacts don't (its keys and buttons come with the unit's records). Let go when watching
++ * ends (cast.c cast_flush) */
++static __attribute__((noinline)) void ed_panel(const uint8_t *a)
++{
++    uint32_t m = a[1] | (uint32_t)a[2] << 7, b = 0, k, l;
++    int32_t s = a[2] < 64u ? (int32_t)a[2] : (int32_t)a[2] - 128;
++    fm1_irq_off();
++    if (a[0]) {
++        rmt_steps[a[1]] = (int16_t)(rmt_steps[a[1]] + s);
++    } else {
++        for (l = 0; l < NB; l++)
++            b |= (m >> l & 1u) << panel.btn[l];
++        k = a[3] | (uint32_t)a[4] << 7 | (uint32_t)a[5] << 14 | (uint32_t)a[6] << 21;
++        fm1_in.vtap ^= b & ~fm1_in.vbtn;                   /* (the ones pressed now) */
++        fm1_in.vktap ^= k & ~fm1_in.vkey;
++        fm1_in.vbtn = b;
++        fm1_in.vkey = k;
++    }
++    fm1_irq_on();
++}
++#endif
++
+ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0 and F7 */
+ {
+     if (n < 4u)
+@@ -511,6 +548,12 @@
+     if ((cmd >= ED_SMP_BEGIN && cmd <= ED_SMP_INFO) || (cmd >= ED_BACKUP_LIST && cmd <= ED_BACKUP_PUT))
+         autosave_hold();                                /* (a transfer: no autosave meanwhile, project.c) */
+     ed_begin(cmd);
++#if FELUCCA_CAST
++    if (cmd == ED_CAST) { cast_cmd(a[0]); ed_send(); return; }
++#endif
++#if FELUCCA_PANEL
++    if (cmd == ED_PANEL) { ed_panel(a); ed_b(a[0]); ed_send(); return; }   /* (the reply: the op; one frame waits) */
++#endif
+     if (ed_ui_handle(cmd, a, na)) { ed_send(); return; }
+     if (ed_backup_handle(cmd, a, na)) { ed_send(); return; }
+     if (ed_fm6_handle(cmd, a, na)) { ed_send(); return; }
+@@ -557,9 +600,16 @@
+             0x49, 1, P_COUNT & 127u, P_COUNT >> 7, P_E0 & 127u, P_E0 >> 7,   /* (Skiff 1.3) wide ids: P_COUNT and
+                                          * P_E0 in two bytes; a track id from 128 on as scope 2 (ED_TID), a motion
+                                          * record's from 128 on with bit 6 of its step byte */
+-            0x58, 1, ED_SONG2};                         /* (2.0) the song's LIST2, NEW, COPY+, CHAIN, ONCE, the pool's
++            0x58, 1, ED_SONG2,                          /* (2.0) the song's LIST2, NEW, COPY+, CHAIN, ONCE, the pool's
+                                                          * EMPTY, CLEAR UNUSED (editor_song.c; last: an editor before
+                                                          * reads up to 49 01 only) */
++#if FELUCCA_CAST
++            0x59, 1, BOARD_SMK37 ? 4u : 3u,             /* (Skiff Studio) the cast, cmd 83 (cast.c): bit 0 the FM-1's
++                                                         * records; (2.7) bit 1 PANEL, cmd 84 (ed_panel, the FM-1's);
++                                                         * bit 2 the SMK-37's records (its copy: felucca_cast_smk.wasm;
++                                                         * not bit 0, so an editor before 2.7 offers it no Screen tab) */
++#endif
++        };
+         ed_str("FELUCCA " FELUCCA_VERSION, 24);
+         ed_b(NENGINES);
+         ed_b(P_COUNT > 127u ? 127u : P_COUNT);            /* ((1.3) more: INFO 49 01) */
+@@ -984,9 +1034,11 @@
+     const uint8_t *p;
+     uint32_t n;
+     ed_sync();                                             /* v2 pushes (while watched) */
++    CAST(cast_flush());                                    /* (Skiff Studio) the cast out */
+     if (!ota_frame_get(&p, &n) || n < 4u || p[0] != ED_HDR0 || p[1] != ED_HDR1 || p[2] != ED_HDR2)
+         return;
+     ed_w.last_ms = fm1_ms;                                 /* any request keeps WATCH alive */
++    CAST(cast_rec('R', p[3], 0u));                         /* (the copy runs the same request here) */
+     if (p[3] >= ED_SMP_BEGIN) {                            /* large frames: handled in place, then freed */
+         if (p[3] == ED_SMP_MIX && n > 4u)
+             ed_smp_mix(p, n);                              /* ((#21) ed_smp_mix) */
+--- a/firmware/src/eng_analog.c
++++ b/firmware/src/eng_analog.c
+@@ -27,8 +27,12 @@
+ 
+ static void analog_note_on(track_t *t, voice_t *v)
+ {
+-    (void)t;
+-    v->ph[1] = v->ph[0] + 0x40000000u;
++    uint32_t sin = t->p[P_E0] == 3;
++    if (sin)                                          /* ((2.7, #110) SIN: both oscillators from their zero crossing, */
++        v->ph[0] = 0;                                 /* not where the voice's last note left OSC 1 (nor OSC 2 a quarter
++                                                       * on: at its peak with MIX up), a click; a retrigger keeps its
++                                                       * phases: voice_start) */
++    v->ph[1] = sin ? 0u : v->ph[0] + 0x40000000u;
+     v->s[0] = v->s[1] = 0;                            /* filter */
+     if (!v->s[2])
+         v->s[2] = 0x1234567 + (int32_t)v->age;        /* noise state */
+--- a/firmware/src/eng_trio.c
++++ b/firmware/src/eng_trio.c
+@@ -411,4 +411,5 @@
+     .note_on = trio_note_on,
+     .render = trio_render,
+     .knob = {P_E5, P_E6, P_E7, P_E1},
++    .keep = 0x33,                /* ((2.7, #118) the filter, the late sample, the drift: a retrigger lost them, a pop) */
+ };
+--- a/firmware/src/felucca.c
++++ b/firmware/src/felucca.c
+@@ -42,14 +42,17 @@
+ #if BOARD_SMK37
+ #define FELUCCA_ID SMK_MODEL "_700"   /* package identity (build.py: the .fwsc marker string) */
+ #else
+-#define FELUCCA_ID "FM-1_946221"    /* package identity (build.py: the .fwsc marker string) */
++#define FELUCCA_ID "FM-1_946240"    /* package identity (build.py: the .fwsc marker string) */
+ #endif
+ #endif
+ #ifndef FELUCCA_VERSION
+-#define FELUCCA_VERSION "Sillage 2.2.1 FX test"       /* Skiff's; shown in the menu, the console and the editor; build.py --release X.Y */
++#define FELUCCA_VERSION "Sillage 2.4 beta"       /* Skiff's; shown in the menu, the console and the editor; build.py --release X.Y */
+ #endif
+ #if FELUCCA_OTA && !FELUCCA_FLASH
+ #error "FELUCCA_OTA needs FELUCCA_FLASH"
++#endif
++#ifndef FELUCCA_CAST
++#define FELUCCA_CAST FELUCCA_OTA     /* (Skiff Studio) the cast (cast.c); the SMK-37's own controls too (X V D A) */
+ #endif
+ #ifndef FELUCCA_CPU2
+ #define FELUCCA_CPU2 1           /* (Skiff 1.3, as Felucca 1.6.1) 1: the second core is built in and renders some tracks when
+@@ -106,6 +109,14 @@
+ /* ----------------------------------------------------- base, display --- */
+ #include "libc.c"
+ #include "lcd.c"
++#if FELUCCA_CAST                 /* (Skiff Studio) gfx.c cv_begin: a piece of the frame begins (cast.c cast_piece) */
++static void cast_piece(void);
++#define GFX_HOOKS 0
++#define GFX_HOOK_TEXT(x0, y0, x1, y1, s, flags) ((void)0)
++#define GFX_HOOK_BLIT(x, y, r0) ((void)0)
++#define GFX_HOOK_BEGIN() cast_piece()
++#define GFX_HOOK_PIXELS(n) ((void)0)
++#endif
+ #include "gfx.c"
+ 
+ /* ----------------------------------------------------------- sound --- */
+@@ -157,4 +168,7 @@
+ #include "smk_ui.c"              /* the SMK-37's own controls: pads, faders, wheels, pedal, < >, KEY VELOCITY */
+ #endif
+ #include "master.c"              /* the MASTER pot (#137: read before the audio starts) */
++#if FELUCCA_CAST
++#include "cast.c"                /* (Skiff Studio) the cast: a copy of Skiff in the browser follows this unit */
++#endif
+ #include "main.c"
+--- a/firmware/src/fx.c
++++ b/firmware/src/fx.c
+@@ -1,5 +1,5 @@
+ /* SPDX-License-Identifier: GPL-3.0-only
+- * Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments */
++ * Copyright (C) 2026 Leo Kuroshita (@kurogedelic), HÃ¼gelton Instruments */
+ /* Effects: per-track DIST insert, then sends into three
+  * shared buses (chorus, tempo delay, reverb). Mono buses (HALL with its stereo difference), stereo dry mix. */
+ #define DLY_LEN 65536u           /* 1.49 s: 1/4 at 40 BPM fits */
+@@ -406,6 +406,75 @@
+     return s < 16u ? 16u : s >= DLY_LEN ? DLY_LEN - 1u : s;
+ }
+ 
++/* Sillage 2.4 block-floating reverb precision.
++ * The 128-block peak window covers every used delay line (longest: 60 ms).
++ * Gain changes rescale the existing state; never add a gate or a compressor.
++ * Only the active model's buffers/state are rescaled. */
++static struct { uint16_t peak[128]; uint32_t pos; int32_t exponent; uint32_t block_peak; } rv_precision __attribute__((section(".pool")));
++/* Half-band coefficients and phase convention adapted from Frodhes rev_types.c
++ * (leonardoMirabal, GPL-3.0-only), following its Felucca-derived Hall. */
++static struct { int32_t in[10],mid[5],side[5]; } rv_filter __attribute__((section(".pool")));
++
++#define RV_HB(c,d) (624*((c)[-(d)]+(c)[0])-152*((c)[-2*(d)]+(c)[d])+40*((c)[-3*(d)]+(c)[2*(d)]))
++#if defined(SILLAGE_REVERB_TEST)
++static uint32_t rv_test_clips, rv_test_rescales;
++#define RV_CLIP(x) (rv_test_clips += (x)<-32768 || (x)>32767)
++#define RV_RESCALE() (++rv_test_rescales)
++#else
++#define RV_CLIP(x) ((void)0)
++#define RV_RESCALE() ((void)0)
++#endif
++static inline int32_t rv_store16(int32_t x) {
++ uint32_t a=x<0?(0u-(uint32_t)x):(uint32_t)x;
++ if(a>rv_precision.block_peak) rv_precision.block_peak=a;
++ RV_CLIP(x);
++ return clamp(x,-32768,32767);
++}
++static int32_t rv_shift(int32_t x,int s) {
++ if(s>0)return x*(1<<s);
++ uint32_t sh=(uint32_t)-s;
++ int32_t bias=(x>>31)&(int32_t)((1u<<sh)-1u);
++ return (x+bias)>>sh; /* signed power-of-two division towards zero; no integer divide */
++}
++static void rv_rescale(uint32_t model,int shift) {
++ uint32_t i; RV_RESCALE();
++ uint32_t nc=model==1u?SP_LEN:(model>=2u?(467+509+547+593+631+673+709+743+HL_NL):4937u);
++ for(i=0;i<nc;i++)rev_comb[i]=(int16_t)rv_shift(rev_comb[i],shift);
++ if(model==1u) {
++  for(i=0;i<4u*(SP_N+1u);i++)rev_u.sp[i]=rv_shift(rev_u.sp[i],shift);
++  fx.sp_lp=rv_shift(fx.sp_lp,shift);fx.sp_hp=rv_shift(fx.sp_hp,shift);fx.sp_he=rv_shift(fx.sp_he,shift);
++ } else {
++  if(model>=2u){for(i=0;i<10;i++)rv_filter.in[i]=rv_shift(rv_filter.in[i],shift);
++   for(i=0;i<5;i++){rv_filter.mid[i]=rv_shift(rv_filter.mid[i],shift);rv_filter.side[i]=rv_shift(rv_filter.side[i],shift);}}
++  uint32_t na=model>=2u?438u:997u;
++  for(i=0;i<na;i++)rev_ap[i]=(int16_t)rv_shift(rev_ap[i],shift);
++  if(model>=2u) {
++   for(i=0;i<HL_NL;i++){hl.lp[i]=rv_shift(hl.lp[i],shift);hl.le[i]=rv_shift(hl.le[i],shift);}
++   hl.x=rv_shift(hl.x,shift);hl.hp=rv_shift(hl.hp,shift);hl.he=rv_shift(hl.he,shift);
++   hl.m=rv_shift(hl.m,shift);hl.s=rv_shift(hl.s,shift);
++  } else for(i=0;i<4u;i++)fx.comb_lp[i]=rv_shift(fx.comb_lp[i],shift);
++ }
++ for(i=0;i<128;i++)rv_precision.peak[i]=(uint16_t)rv_shift(rv_precision.peak[i],shift);
++ rv_precision.exponent+=shift;
++}
++static int32_t rv_choose(uint32_t model,const int32_t *in,uint32_t n) {
++ uint32_t ip=0,pk=0;int e=rv_precision.exponent,target=2;
++ for(uint32_t i=0;i<n;i++){uint32_t a=in[i]<0?(0u-(uint32_t)in[i]):(uint32_t)in[i];if(a>ip)ip=a;}
++ for(uint32_t i=0;i<128;i++)if(rv_precision.peak[i]>pk)pk=rv_precision.peak[i];
++ uint32_t limit=model==0u?2048u:4096u;
++ while(target>-8 && ip > (target>=0?limit>>target:limit<<-target))target--;
++ if(pk>8192u && target>=e)target=e-1;
++ if(model==1u)for(uint32_t i=0;i<4u*(SP_N+1u);i++){uint32_t a=rev_u.sp[i]<0?(0u-(uint32_t)rev_u.sp[i]):(uint32_t)rev_u.sp[i];if(a>pk)pk=a;}
++ while(target>e && pk>(4096u>>(target-e)))target--;
++ if(target>2)target=2;if(target< -8)target=-8;
++ if(target!=e)rv_rescale(model,target-e);
++ rv_precision.block_peak=0;
++ return target;
++}
++/* Room feedback must round towards zero, like SPRING and the stereo delay.
++ * Flooring negative products sustains a residual DC/limit cycle after input stops.
++ * Reuse the Q15 helper below: no extra buffers and no noise gate. */
++static inline int32_t mulq15z(int32_t x, int32_t g);
+ /* ROOM (G_RTYPE 0): 4 damped combs + 2 allpasses (Freeverb-like, mono), added to out */
+ static __attribute__((noinline)) void rev_room(const int32_t *rev_in, int32_t *out, uint32_t n)
+ {
+@@ -419,8 +488,8 @@
+         int32_t in = mulq15(rev_in[i], 2580);           /* 1/8 at -4 dB: level as before the allpass fix */
+         for (k = 0; k < 4u; k++) {
+             int32_t o = c[fx.comb_i[k]];
+-            fx.comb_lp[k] = o + mulq15(fx.comb_lp[k] - o, 32767 - damp);
+-            c[fx.comb_i[k]] = (int16_t)clamp(in + mulq15(fx.comb_lp[k], feedback), -32768, 32767);
++            fx.comb_lp[k] = o + mulq15z(fx.comb_lp[k] - o, 32767 - damp);
++            c[fx.comb_i[k]] = (int16_t)rv_store16(in + mulq15z(fx.comb_lp[k], feedback));
+             if (++fx.comb_i[k] >= REV_COMB[k])
+                 fx.comb_i[k] = 0;
+             a += o;
+@@ -429,8 +498,8 @@
+         c = rev_ap;
+         for (k = 0; k < 2u; k++) {
+             int32_t o = c[fx.ap_i[k]];
+-            int32_t v = a + mulq15(o, diffusion);
+-            c[fx.ap_i[k]] = (int16_t)clamp(v, -32768, 32767);
++            int32_t v = a + mulq15z(o, diffusion);
++            c[fx.ap_i[k]] = (int16_t)rv_store16(v);
+             a = o - a;                                  /* Freeverb: out = buf - in (o - v is a notch comb) */
+             if (++fx.ap_i[k] >= REV_AP[k])
+                 fx.ap_i[k] = 0;
+@@ -471,7 +540,7 @@
+     uint32_t i;
+     for (i = 0; i < n; i++) {
+         int32_t y = q[i], v = x[i] + sh_tz(y * g, 14);
+-        q[i] = (int16_t)clamp(v, -32768, 32767);
++        q[i] = (int16_t)rv_store16(v);
+         x[i] = y - ((v * g + 8192) >> 14);
+     }
+ }
+@@ -536,15 +605,19 @@
+     (void)n;
+     if (hl.sz != decay + 1)
+         hall_gains(decay);
++    int32_t hbin[10+CTL];
++    if(1){for(i=0;i<10;i++)hbin[i]=rv_filter.in[i];for(i=0;i<n;i++)hbin[10+i]=rev_in[i];}
+     for (i = 0; i < HL_NC; i++) {
+         int32_t x = (xp + 2 * rev_in[2u * i] + rev_in[2u * i + 1u]) >> 2, v;   /* every other sample, 1 2 1 */
+         xp = rev_in[2u * i + 1u];
++        if(1){const int32_t *c=hbin+10+2*i-4;x=(1024*c[0]+RV_HB(c+1,2)+1024)>>11;}
+         x = mulq15(clamp(x, -262143, 262143), 2580);    /* (ROOM's level) */
+         v = x - hp + he;                                /* the low cut, its step's remainder kept */
+         he = v & 31;
+         hp += v >> 5;
+         hl.bx[i] = x - hp;
+     }
++    if(1)for(i=0;i<10;i++)rv_filter.in[i]=hbin[n+i];
+     hl.x = xp, hl.hp = hp, hl.he = he;
+     for (k = 0; k < HL_NAP; k++) {                      /* the diffusers */
+         d = hl.d[k];
+@@ -586,14 +659,14 @@
+         p0 = y2 + y3 + y5, p1 = y3 + y4 + y6, p2 = y4 + y5 + y7, p3 = y5 + y6 + y1;
+         p4 = y6 + y7 + y2, p5 = y7 + y1 + y3, p6 = y1 + y2 + y4;
+         y0 += t;
+-        hl.y[0][i] = (int16_t)clamp(t + x, -32768, 32767);   /* (+ the send: signs spread over the rows) */
+-        hl.y[1][i] = (int16_t)clamp(2 * p0 + y1 - y0 + x, -32768, 32767);
+-        hl.y[2][i] = (int16_t)clamp(2 * p1 + y2 - y0 + x, -32768, 32767);
+-        hl.y[3][i] = (int16_t)clamp(2 * p2 + y3 - y0 + x, -32768, 32767);
+-        hl.y[4][i] = (int16_t)clamp(2 * p3 + y4 - y0 + x, -32768, 32767);
+-        hl.y[5][i] = (int16_t)clamp(2 * p4 + y5 - y0 + x, -32768, 32767);
+-        hl.y[6][i] = (int16_t)clamp(2 * p5 + y6 - y0 + x, -32768, 32767);
+-        hl.y[7][i] = (int16_t)clamp(2 * p6 + y7 - y0 - x, -32768, 32767);
++        hl.y[0][i] = (int16_t)rv_store16(t + x);   /* (+ the send: signs spread over the rows) */
++        hl.y[1][i] = (int16_t)rv_store16(2 * p0 + y1 - y0 + x);
++        hl.y[2][i] = (int16_t)rv_store16(2 * p1 + y2 - y0 + x);
++        hl.y[3][i] = (int16_t)rv_store16(2 * p2 + y3 - y0 + x);
++        hl.y[4][i] = (int16_t)rv_store16(2 * p3 + y4 - y0 + x);
++        hl.y[5][i] = (int16_t)rv_store16(2 * p4 + y5 - y0 + x);
++        hl.y[6][i] = (int16_t)rv_store16(2 * p5 + y6 - y0 + x);
++        hl.y[7][i] = (int16_t)rv_store16(2 * p6 + y7 - y0 - x);
+     }
+     b = rev_comb;
+     for (k = 0; k < HL_NL; k++) {                       /* back into the lines (and the mirror after a wrap) */
+@@ -602,15 +675,23 @@
+         hl.i[k] = (uint16_t)d;
+         b += HL_LEN[k] + 1u;
+     }
++    int32_t hm[5+HL_NC],hs[5+HL_NC];
++    if(1){for(i=0;i<5;i++){hm[i]=rv_filter.mid[i];hs[i]=rv_filter.side[i];}
++     for(i=0;i<HL_NC;i++){hm[5+i]=(hl.l[i]+hl.r[i])*HL_OUT;hs[5+i]=(hl.l[i]-hl.r[i])*HL_OUT;}}
+     for (i = 0; i < HL_NC; i++) {                       /* back to 44.1 kHz, between samples */
+         int32_t mm = (hl.l[i] + hl.r[i]) * HL_OUT, ss = (hl.l[i] - hl.r[i]) * HL_OUT;
+         out[2u * i] += (mp + mm) >> 1;
+         out[2u * i + 1u] += mm;
+         rev_side[2u * i] = (sp + ss) >> 1;
+         rev_side[2u * i + 1u] = ss;
++        if(1){const int32_t *u=hm+3+i,*q=hs+3+i;
++         out[2*i]-=(mp+mm)>>1;out[2*i+1]-=mm;
++         out[2*i]+=(RV_HB(u,1)+512)>>10;out[2*i+1]+=u[0];
++         rev_side[2*i]=(RV_HB(q,1)+512)>>10;rev_side[2*i+1]=q[0];}
+         mp = mm;
+         sp = ss;
+     }
++    if(1)for(i=0;i<5;i++){rv_filter.mid[i]=hm[HL_NC+i];rv_filter.side[i]=hs[HL_NC+i];}
+     hl.m = mp, hl.s = sp;
+     hl.side = 1;
+ }
+@@ -653,7 +734,7 @@
+             p = o;
+             ap[j + k] = x;
+         }
+-        ln[wp & SP_MASK] = (int16_t)clamp(x, -32768, 32767);
++        ln[wp & SP_MASK] = (int16_t)rv_store16(x);
+         fx.sp_w = (uint16_t)(wp + 1u);
+         out[i] += (t0 + (((t1 - t0) * f) >> 8)) * 4 + ln[(wp - (uint32_t)L3) & SP_MASK] * 2;
+     }
+@@ -662,6 +743,7 @@
+ /* the reverb's buffers and states to silence (the model changed) */
+ static void rev_clear(void)
+ {
++    memset(&rv_precision,0,sizeof rv_precision);memset(&rv_filter,0,sizeof rv_filter);
+     uint32_t i;
+     for (i = 0; i < sizeof rev_comb / 2u; i++)
+         rev_comb[i] = 0;
+@@ -679,7 +761,7 @@
+     rev_hall_mode(in, out, n, 0);
+ }
+ 
+-static void rev_model_raw(uint32_t m, const int32_t *rev_in, int32_t *out, uint32_t n)   /* G_RTYPE m, added to out */
++static void rev_kernel_raw(uint32_t m, const int32_t *rev_in, int32_t *out, uint32_t n)   /* G_RTYPE m, added to out */
+ {
+     if (m == 1u)
+         rev_spring(rev_in, out, n);
+@@ -691,6 +773,13 @@
+         rev_room(rev_in, out, n);
+ }
+ 
++static void rev_model_raw(uint32_t m,const int32_t *in,int32_t *out,uint32_t n) {
++ int32_t x[CTL],wet[CTL];int exp=rv_choose(m,in,n);
++ for(uint32_t i=0;i<n;i++){x[i]=rv_shift(clamp(in[i],-524287,524287),exp);wet[i]=0;}
++ rev_kernel_raw(m,x,wet,n);
++ for(uint32_t i=0;i<n;i++){out[i]+=rv_shift(wet[i],-exp);if(m==2u||m==3u)rev_side[i]=rv_shift(rev_side[i],-exp);}
++ rv_precision.peak[rv_precision.pos++&127u]=(uint16_t)(rv_precision.block_peak>65535u?65535u:rv_precision.block_peak);
++}
+ static int16_t rev_pre[1024] __attribute__((section(".pool")));
+ static uint32_t rev_pre_pos;
+ static void rev_model(uint32_t m, const int32_t *in, int32_t *out, uint32_t n)
+@@ -699,7 +788,9 @@
+     uint32_t tap = (uint32_t)song.g[G_RPRE] * FS / 1000u;
+     for (uint32_t i = 0; i < n; i++) {
+         delayed[i] = rev_pre[(rev_pre_pos - tap) & 1023u] * 8;
+-        rev_pre[rev_pre_pos++ & 1023u] = (int16_t)clamp(in[i] / 8, -32768, 32767);
++        int32_t q=in[i]/8, r=in[i]%8;    /* nearest: avoid the pre-delay's biased truncation */
++        if(r>=4)q++;else if(r<=-4)q--;
++        rev_pre[rev_pre_pos++ & 1023u] = (int16_t)clamp(q, -32768, 32767);
+     }
+     rev_model_raw(m, tap ? delayed : in, out, n);
+ }
+@@ -709,7 +800,9 @@
+  * FLANGER: the same line swept 1 .. 7 ms, its comb against the dry tracks the jet. PHASER: four first-order allpasses on
+  * the send, swept together by the chorus LFO once a block (RATE; DEPTH the sweep), notches against the dry. CHORUS
+  * without FEEDBACK is the loop in fx_buses, bit for bit. (2.5) In a stereo DELAY MODE CHORUS and FLANGER are cho_st's;
+- * PHASER stays mono */
++ * PHASER stays mono. (2.7, #101) PHASER at an eighth of the send: its states within +-65535 and |a| <= 31130 keep each
++ * product under 2^31 (mulq15 multiplies in 32 bits); at a half (+-262144) one wrapped once a state passed ~69,000, a
++ * loud high squeal at a high FEEDBACK. The same headroom as before */
+ static inline int32_t cho_sweep(uint32_t mode, uint32_t ph, int32_t depth)   /* the tap, Q8 samples back */
+ {
+     return mode == 1u ? (44 << 8) + ((osc_sine(ph) + 32768) * depth >> 7)   /* FLANGER: 1 .. 7 ms */
+@@ -731,14 +824,14 @@
+         fx.cho_ph += cinc * n;
+         a = -31130 + mulq15(lfo, 3000 + depth * 205);
+         for (i = 0; i < n; i++) {
+-            int32_t x = (cho_in[i] >> 1) + mulq15(fx.cho_y, fb);
++            int32_t x = (cho_in[i] >> 3) + mulq15(fx.cho_y, fb);   /* ((2.7, #101) at an eighth: see the top) */
+             for (k = 0; k < 4u; k++) {                  /* (a + z^-1) / (1 + a z^-1): w = x - a w1, y = a w + w1 */
+-                int32_t w = clamp(x - mulq15(fx.ph_s[k], a), -262144, 262144);
++                int32_t w = clamp(x - mulq15(fx.ph_s[k], a), -65535, 65535);
+                 x = mulq15(w, a) + fx.ph_s[k];
+                 fx.ph_s[k] = w;
+             }
+-            fx.cho_y = clamp(x, -65536, 65536);
+-            wet[i] = fx.cho_y << 1;
++            fx.cho_y = clamp(x, -16384, 16384);
++            wet[i] = fx.cho_y << 3;
+         }
+     } else
+     for (i = 0; i < n; i++) {                           /* CHORUS (with FEEDBACK), FLANGER */
+@@ -1156,8 +1249,10 @@
+ /* (2.5, the user's 6B) FILTR: ANALOG's 2-pole state-variable filter (dsp.c tsvf, trapezoidal: stable as CUTOFF sweeps)
+  * at CUTOFF (A) and RES (B), its output by SHAPE (C): LP (0) into BP (64) into HP (127), the two beside it blended; BP
+  * level-matched (k v1: at the cutoff as loud as LP's flat part), so a sweep of SHAPE keeps its level. The signal at a
+- * half in it (its states within +-150000; RES's peak clips there, as ANALOG's); the states are lp1 and lp2: no new RAM */
+-static __attribute__((noinline)) void ins_filter(ins_t *s, const track_t *t, int32_t *b, uint32_t n, int32_t tw)
++ * half in it (its states within +-150000; RES's peak clips there, as ANALOG's). Its two states at z: ((2.7, #119) one
++ * pair a signal, track_insert's) PHASR's px and py, which FILTR never runs with: no new RAM */
++static __attribute__((noinline)) void ins_filter(ins_t *s, int32_t *z, const track_t *t, int32_t *b, uint32_t n,
++                                                 int32_t tw)
+ {
+     tsvf_t c;
+     int32_t sh = clamp(t->p[P_IC], 0, 127), k = 8192 - clamp(t->p[P_IB], 0, 127) * 7600 / 127;   /* damping, Q12 */
+@@ -1165,12 +1260,12 @@
+     uint32_t i;
+     tsvf_coef_k(&c, clamp(t->p[P_IA], 0, 127) << 8, k);
+     for (i = 0; i < n; i++) {
+-        int32_t x = b[i], in = clamp(x, -262143, 262143) >> 1, v3 = in - s->lp2, v1, v2, bp;   /* (|HP| x 4096 < 2^31) */
++        int32_t x = b[i], in = clamp(x, -262143, 262143) >> 1, v3 = in - z[1], v1, v2, bp;   /* (|HP| x 4096 < 2^31) */
+         s->w += clamp(tw - s->w, -SL_SLOPE, SL_SLOPE);
+-        v1 = (c.a1 * s->lp1 + c.a2 * v3 + 4096) >> 13;  /* (rounded: floored, the integrators turned its bias into a DC */
+-        v2 = s->lp2 + ((c.a2 * s->lp1 + c.a3 * v3 + 4096) >> 13);   /* of ~7 % at a low CUTOFF) */
+-        s->lp1 = clamp(2 * v1 - s->lp1, -150000, 150000);
+-        s->lp2 = clamp(2 * v2 - s->lp2, -150000, 150000);
++        v1 = (c.a1 * z[0] + c.a2 * v3 + 4096) >> 13;    /* (rounded: floored, the integrators turned its bias into a DC */
++        v2 = z[1] + ((c.a2 * z[0] + c.a3 * v3 + 4096) >> 13);   /* of ~7 % at a low CUTOFF) */
++        z[0] = clamp(2 * v1 - z[0], -150000, 150000);
++        z[1] = clamp(2 * v2 - z[1], -150000, 150000);
+         bp = (k * v1) >> 12;
+         b[i] = pf_mix(x, (v2 * wl + bp * wb + (in - bp - v2) * wh) >> 11, s->w);   /* (Q12 shares, x2: the half back) */
+     }
+@@ -1216,7 +1311,7 @@
+     }
+ }
+ 
+-static __attribute__((noinline)) int track_insert(track_t *t, int32_t *b, int32_t *side, uint32_t n)
++static __attribute__((noinline)) int track_insert(track_t *t, int32_t *b, int32_t *side, int32_t *d, int32_t *e, uint32_t n)
+ {
+     ins_t *s = &ins[(uint32_t)(t - trk) % NTRK];
+     int32_t ty = clamp(t->p[P_ITYPE], 0, IT_N - 1), tw;
+@@ -1233,8 +1328,18 @@
+     }
+     if (s->type == IT_JUNO)
+         ins_juno(s, t, b, side, n, tw);
+-    else if (s->type == IT_FILTER)
+-        ins_filter(s, t, b, n, tw);
++    else if (s->type == IT_FILTER) {
++        int32_t w0 = s->w;
++        ins_filter(s, s->px, t, b, n, tw);
++        if (d) {
++            s->w = w0;
++            ins_filter(s, s->px + 2, t, d, n, tw);
++        }
++        if (e) {
++            s->w = w0;
++            ins_filter(s, s->py, t, e, n, tw);
++        }
++    }
+     else if (s->type >= IT_PHASER)
+         ins_swept(s, t, b, n, tw);
+     else
+@@ -1249,11 +1354,14 @@
+  * always) and the left ones (spread_buf); here d = left - right, the side signal, so for a pair of pans L = b (gla +
+  * glb) / 2 + d (gla - glb) / 2 (R alike): the mono sum is b's. b goes through DRIVE, the INSERT, the SLICER, the FX
+  * layer's mute key and the DUCK as always; d gets the SLICER's gate, the mute's and the DUCK's gains and passes DRIVE
+- * and the INSERT by (the spread of a driven chord is its voices' clean difference). The sends take b, mono, as before.
++ * and the INSERT by (the spread of a driven chord is its voices' clean difference), but for the INSERT's FILTR ((2.7,
++ * #119): a linear filter, so d through it too, as b; passed by, both sides kept the voices unfiltered). The sends take
++ * b, mono, as before.
+  * SPREAD 0, MONO or LEGATO: mix_part's own loop, bit for bit as before.
+  * (2.0, #36) A drum kit with a lane panned (t->lpan_on, voice.c lpan_render) mixes here too: b is every lane, d (spread_buf)
+  * what its left channel loses to the lanes panned right, e (lpan_buf) what the right loses to those panned left, each
+- * through the same gains as d is; then the track's PAN over both. The kit's DRIVE, INSERT and sends hear b as before. (A
++ * through the same gains as d is; then the track's PAN over both. The kit's DRIVE, INSERT and sends hear b as before
++ * ((2.7, #119) FILTR d and e too). (A
+  * SPREAD a kit kept from another engine, hidden, spreads its hits as in 1.x until a lane is panned) */
+ /* .. (2.0, #36) a panned kit's end: each channel less its far side's sum (d the left's, e the right's), then the track's
+  * PAN; the sends from b, mono, as mix_part's */
+@@ -1351,7 +1459,7 @@
+     if (t->p[P_ITYPE] | t->ins_run)
+         {
+         int32_t side[CTL];
+-        if (AUDIO_FAR(track_insert)(t, b, side, n))
++        if (AUDIO_FAR(track_insert)(t, b, side, d, e, n))
+             for (i = 0; i < n; i++) {
+                 d[i] += side[i];
+                 if (e) e[i] -= side[i];
+@@ -1539,7 +1647,7 @@
+         de = dly_send_r(&d, gl, gr);                    /* ((2.5) a stereo MODE: the delay's send by the PAN) */
+         track_dist(t, b, n);
+         int32_t side[CTL];
+-        int stereo = (t->p[P_ITYPE] | t->ins_run) && AUDIO_FAR(track_insert)(t, b, side, n);
++        int stereo = (t->p[P_ITYPE] | t->ins_run) && AUDIO_FAR(track_insert)(t, b, side, 0, 0, n);
+         if (stereo)
+             AUDIO_FAR(slicer_track_sd)(t, b, side, 0, n);
+         else
+@@ -1713,7 +1821,6 @@
+         throw_off();                                    /* (Skiff) .. and off: nothing else sees them */
+     if (perf)                                           /* ((2.5) a stereo delay: THROW and DUB left and right) */
+         AUDIO_FAR(perf_pre)(mix_l, mix_r, send_d, song.g[G_DMODE] != DM_MONO ? send_e : 0, send_r, n);
+-    if (perf) AUDIO_FAR(perf_filter_dry)(mix_l, mix_r, n);
+     fx_buses(send_c, send_d, send_e, send_r, wet, n);
+     if (hl.side)
+         rev_side_mix(mix_l, mix_r, n);                  /* HALL, (2.5) a stereo delay and chorus: stereo */
+--- a/firmware/src/lcd.c
++++ b/firmware/src/lcd.c
+@@ -9,6 +9,13 @@
+ /* pins and SPI1: hal/fm1_lcd_hw.h */
+ #ifndef LCD_BAUD
+ #define LCD_BAUD 4u                /* lsb/(BAUD+1): 4 = 12 MHz */
++#endif
++
++#if FELUCCA_CAST
++static void cast_px(uint32_t xywh, uint32_t c, const uint16_t *p, uint32_t n);   /* ((Skiff Studio) cast.c: the frame's */
++#define LCD_CAST(x, y, w, h, c, p, n) cast_px((x) | (y) << 8 | (w) << 16 | (h) << 24, (c), (p), (n))   /* pixels hashed */
++#else
++#define LCD_CAST(x, y, w, h, c, p, n) ((void)0)
+ #endif
+ 
+ static uint8_t lcd_small[64];
+@@ -69,6 +76,7 @@
+ static void lcd_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint16_t c)
+ {
+     uint32_t i, n, k, sw = (uint16_t)((c >> 8) | (c << 8));
++    LCD_CAST(x, y, w, h, c, 0, 0u);
+     if (!w || !h || x >= 240u || y >= 240u)
+         return;
+     if (x + w > 240u)
+@@ -89,10 +97,11 @@
+ 
+ static void lcd_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint16_t *px)
+ {
+-    if (!w || !h)
+-        return;
+-    lcd_window(x, y, x + w - 1u, y + h - 1u);
+-    lcd_data(px, w * h * 2u);
++    if (w && h) {
++        lcd_window(x, y, x + w - 1u, y + h - 1u);
++        lcd_data(px, w * h * 2u);
++    }
++    LCD_CAST(x, y, w, h, 0u, px, w * h);       /* (hashed while the DMA sends them) */
+ }
+ 
+ /* ST7789V init: reset, then 16-bit colour, scan direction and IPS inversion;
+@@ -109,6 +118,21 @@
+     0x13, 0,                     /* NORON */
+ };
+ 
++/* ST7789V GAMSET (26h), datasheet section 9.1.17. Select preset curves
++ * only. DEFAULT restores the reset curve. No panel supply voltages change. */
++#define SILLAGE_LCD_GAMMA 1
++static void lcd_gamma_trial(uint32_t profile)
++{
++    static const uint8_t curves[] = {0x01, 0x02, 0x04};
++    if (profile >= sizeof curves)
++        return;
++    lcd_sync();
++    lcd_small[0] = curves[profile];
++    lcd_cmd(0x26);
++    lcd_data(lcd_small, 1);
++    lcd_sync();
++}
++
+ static void lcd_init(void)
+ {
+     uint32_t r, x;
+--- a/firmware/src/main.c
++++ b/firmware/src/main.c
+@@ -138,25 +138,42 @@
+ static uint32_t crash_seen __attribute__((section(".noinit")));   /* fm1_crash.count at the last boot */
+ static uint8_t boot_clean;                    /* no crash, hang (WDT) or failed boot before this one (boot_leds):
+                                                * the sweep runs and the autosave is restored (project.c autosave_boot) */
++static uint32_t boot_crashed(void)            /* the last boot ended in a crash or a hang (WDT); ((2.7, #126)
++                                               * fm1_main: 2 CORES then falls back to 1) */
++{
++    return (fm1_crash.magic == FM1_CRASH_MAGIC && fm1_crash.count != crash_seen
++#if FELUCCA_CPU2
++            && fm1_crash.core != 1u           /* ((Skiff 1.3) the second core's own fault left core 0 playing) */
++#endif
++            ) || (fm1_boot.p3_rst & 4u);
++}
+ static void boot_leds(void)
+ {
+-    uint32_t crashed = fm1_crash.magic == FM1_CRASH_MAGIC && fm1_crash.count != crash_seen
+-#if FELUCCA_CPU2
+-                       && fm1_crash.core != 1u    /* ((Skiff 1.3) the second core's own fault left core 0 playing) */
+-#endif
+-                       ;
++    boot_clean = !boot_crashed() && !bootguard.failed;
+     crash_seen = fm1_crash.count;
+-    boot_clean = !crashed && !bootguard.failed && !(fm1_boot.p3_rst & 4u);
+     fm1_led_dim_level(settings_leds == LEDS_DIM_LO);
+     if (boot_clean && !(ui_prefs & PREF_ANIM_OFF))
+         fm1_led_anim_start(settings_leds == LEDS_DIM || settings_leds == LEDS_DIM_LO);
+ }
+ 
++/* the last session's music, and the unit's CLOCK MIDI IN TUNE over it; ((Skiff Studio) a cast's restart: before the audio
++ * ISR first runs, fm1_main: one copy of it for the two places) */
++#if FELUCCA_CAST
++__attribute__((noinline))
++#endif
++static void boot_music(void)
++{
++    unit_g_adopt = ui_set_rev < 2u;           /* (Skiff U3, R8) the first boot: the session's CLOCK MIDI IN TUNE .. */
++    autosave_boot(boot_clean);                /* (1.2) the last session's music, under the splash */
++    unit_g_boot();                            /* .. become the unit's; later the unit's are put back over it (ui.c) */
++}
++
+ static void fm1_main(void)
+ {
+     uint32_t ms;
+ #if FELUCCA_CPU2
+     uint8_t c1_told = 0;                                /* (Skiff 1.3) CORE 2 FAILED said (and the setting cleared) */
++    uint8_t c1_fell = 0;                                /* ((2.7, #126) 2 CORES and the last boot crashed or hung) */
+ #endif
+     persist_boot();
+     bank_boot();                                        /* (Skiff) the pattern bank (bank.c) */
+@@ -212,12 +229,15 @@
+     kb_boot_hold = 1;                         /* #137: no notes from the keys before the UI (seq.c keyboard_block) */
+ #if FELUCCA_CPU2
+     cpu2_move();                              /* ((2.5) every FM-1 on 2 CORES once: ui.c) */
+-    if (!bootguard.failed && CPU2_SET) {
++    c1_fell = CPU2_SET && boot_crashed();
++    if (!bootguard.failed && CPU2_SET && !c1_fell) {
+         /* (Skiff 1.3, as Felucca 1.6.1) the second core (hal/fm1_cpu1.h; fx.c mix_block hands it tracks), at power-on,
+          * before the audio and the timers (started later it never reaches its entry) and before fm1_guard_lock_top
+          * (its entry word is at the top of RAM). It starts in the chip's ROM: the PC limits open meanwhile. MENU > CPU
+          * 1 CORE ((2.5) the SMK-37's default), a crash in the last boot's first 30 s, or no answer: never started, one
+-         * core */
++         * core. ((2.7, #126) The last boot crashed or hung, whenever: never started, and 1 CORE from now on, said in
++         * the loop as a core that stopped answering is; MENU > SYSTEM > CPU 2 CORES turns it on again. Before, a crash
++         * after the first 30 s restarted on 2 CORES: a unit that crashes on 2 CORES did so again and again) */
+         fm1_guard_pc_open();
+         fm1_cpu1_start();
+         fm1_guard_enable(FM1_GUARD_PC);
+@@ -234,6 +254,11 @@
+     boot_leds();
+     timer5_start();
+     fm1_guard_lock_top();
++    if (CAST_AUDIO_LATE())                    /* (Skiff Studio) restarted for a cast: the music in before the audio ISR
++                                               * first runs (the interrupts, next), as the copy in the browser starts:
++                                               * halves rendered with felucca_init's sounds moved the LFOs and the shared
++                                               * generator where the copy can't follow (core.h) */
++        boot_music();
+     fm1_irq_enable_all();
+     fm1_delay_ms(30);
+ #ifndef FM1_OCT_BOTH
+@@ -251,14 +276,14 @@
+ #if FELUCCA_LEGACY
+     proj_migrate(boot_clean);                 /* (Skiff phase 5) projects of before: SKF2, their tracks patterns */
+ #endif
+-    unit_g_adopt = ui_set_rev < 2u;           /* (Skiff U3, R8) the first boot: the session's CLOCK MIDI IN TUNE .. */
+-    autosave_boot(boot_clean);                /* (1.2) the last session's music, under the splash */
+-    unit_g_boot();                            /* .. become the unit's; later the unit's are put back over it (ui.c) */
++    if (!CAST_AUDIO_LATE())
++        boot_music();
+     for (ms = 0; ms < (ux.skiff ? SILLAGE_SPLASH_MS - 30u : 400u); ms += 10u) {
+         fm1_wdt_feed();                       /* keep following the pot and receiving MIDI under the splash */
+         fm1_delay_ms(10);
+         master_poll();
+     }
++    CAST(cast_boot_hold());
+     kb_boot_hold = 0;
+     lcd_fill(0, 0, 240, 240, T_BG);
+     scrn.idle = fm1_ms;                        /* (MENU > SCREEN OFF: from here) */
+@@ -276,10 +301,11 @@
+             bootguard.failed = 0;
+         }
+ #if FELUCCA_CPU2
+-        if (*(volatile uint8_t *)&fm1_c1_gave_up && !c1_told) {   /* ((Skiff 1.3) the ISR's: core 1 misread or
+-                                                         * stopped answering on this FM-1: one core from now on, the
+-                                                         * setting back to 1 CORE (MENU > CPU 2 CORES tries again at the
+-                                                         * next power-on); said once */
++        if ((*(volatile uint8_t *)&fm1_c1_gave_up || c1_fell) && !c1_told) {   /* ((Skiff 1.3) the ISR's: core 1
++                                                         * misread or stopped answering on this FM-1, ((2.7, #126) or
++                                                         * the last boot crashed or hung on 2 CORES: above): one core
++                                                         * from now on, the setting back to 1 CORE (MENU > CPU 2 CORES
++                                                         * tries again at the next power-on); said once */
+             c1_told = 1;
+             if (CPU2_SET) {
+                 CPU2_BYTE &= (uint8_t)~1u;
+@@ -292,8 +318,13 @@
+             int32_t b = fm1_adc_read(FM1_ADC_BATT);     /* battery: slow IIR */
+             if (b > 0)
+                 song.batt_raw = song.batt_raw ? song.batt_raw + (b - song.batt_raw) / 32 : b;
+-        }
+-        master_poll();
++            master_poll();
++#if !FELUCCA_WEB
++            ui_audio_peak = audio_peak_us;
++#endif
++            ui_cpu = (uint8_t)(song.cpu_q8 * 100u / 256u);   /* (the MENU's load: one value a frame) */
++            CAST(cast_frame(b));                        /* (Skiff Studio: a frame starts, with the readings it took) */
++        }
+         {   /* OCT- + OCT+ held 5 s: enter UBOOT with RAM intact (debug / update); a countdown
+              * shows from 2 s over the whole screen (the menu and the dialogs too: ui_draw), letting
+              * go cancels it */
+@@ -365,7 +396,9 @@
+ #if BOARD_SMK37
+         padled_flush();                               /* the pads' colours, between LCD transfers (lcd.c) */
+ #endif
++        CAST(cast_piece());                           /* (Skiff Studio: the draw begins, piece 0: what changed is read now) */
+         ui_draw();
++        CAST(cast_rec('e', cast.px, 0u));             /* (Skiff Studio: drawn, its pixels' hash; the panel is read again) */
+         felucca_dbg.stage = 9;
+         while (fm1_ms - m < 15u) {                               /* ~60 UI frames/s at most */
+             ui_input();
+--- a/firmware/src/master.c
++++ b/firmware/src/master.c
+@@ -4,10 +4,14 @@
+  * 70 % of the knob, until the main loop's first read after the splash, then a 1/8-per-frame glide from mid-scale:
+  * the keys, live from the audio ISR at once, sounded loud under the splash with the knob turned down).
+  * master_knob: the pot x16, smoothed per UI frame (master_poll) */
++#ifndef CAST
++#define CAST(x) ((void)0)                                /* ((Skiff Studio) core.h's cast hook: a test without core.h) */
++#endif
+ static int32_t master_knob = 512 * 16;
+ static void master_poll(void)
+ {
+     int32_t a = fm1_adc_read(FM1_ADC_MASTER);
++    CAST(cast.madc = a);                                /* (Skiff Studio: the frame's reading, cast_frame) */
+     if (a >= 0) {
+         master_knob += (a * 16 - master_knob) / 8;
+         song.master_q12 = master_of_pot((uint32_t)(master_knob / 16));
+--- a/firmware/src/menu_items.c
++++ b/firmware/src/menu_items.c
+@@ -22,13 +22,13 @@
+ #if BOARD_SMK37
+ /* (SMK-37 Pro, SMK37_UX.md) KEY VELOCITY in CONTROL (question 8); no LEDS row (button LEDs A: on or off only): MI_LEDS
+  * past MI_COUNT, so its setting stays and no tab shows it */
+-enum { MI_COLOR, MI_PHEAD, MI_LARGE, MI_ANIM, MI_SCROFF, MI_HINTS, MI_HOLD, MI_ACCEL, MI_BPMLOCK, MI_SCLLED, MI_PREVIEW,
++enum { MI_COLOR, MI_PHEAD, MI_LARGE, MI_ANIM, MI_SCROFF, MI_HINTS, MI_GAMMA, MI_HOLD, MI_ACCEL, MI_BPMLOCK, MI_SCLLED, MI_PREVIEW,
+        MI_RETURN, MI_KEEPS, MI_KVEL, MI_LOWCUT, MI_USB, MI_CLICK, MI_CLKLVL, MI_COUNTIN, MI_TUNE, MI_CLOCK, MI_CLKOUT, MI_ROUTE,
+        MI_AUTOCH, MI_TCH1, MI_TCH2, MI_TCH3, MI_TCH4, MI_TCH5, MI_TCH6, MI_TCH7, MI_TCH8, MI_NOTES, MI_CCOUT, MI_THRU, MI_REMOTE, MI_LEARN,
+        MI_LCLEAR, MI_SERIAL_IN MI_RESTORE, MI_CPU, MI_CLK, MI_PANEL, MI_RESET, MI_ABOUT, MI_COUNT, MI_LEDS MI_SERIAL_OUT };
+ static const char *const KVEL_N[SMK_KV_N] = {"DYNAMIC", "SOFT", "HARD", "FIXED 64", "FIXED 100", "FIXED 127"};
+ #else
+-enum { MI_COLOR, MI_PHEAD, MI_LARGE, MI_ANIM, MI_LEDS, MI_SCROFF, MI_HINTS, MI_HOLD, MI_ACCEL, MI_BPMLOCK, MI_SCLLED,
++enum { MI_COLOR, MI_PHEAD, MI_LARGE, MI_ANIM, MI_LEDS, MI_SCROFF, MI_HINTS, MI_GAMMA, MI_HOLD, MI_ACCEL, MI_BPMLOCK, MI_SCLLED,
+        MI_PREVIEW, MI_RETURN, MI_KEEPS, MI_LOWCUT, MI_USB, MI_CLICK, MI_CLKLVL, MI_COUNTIN, MI_TUNE, MI_CLOCK, MI_CLKOUT, MI_ROUTE,
+        MI_AUTOCH, MI_TCH1, MI_TCH2, MI_TCH3, MI_TCH4, MI_TCH5, MI_TCH6, MI_TCH7, MI_TCH8, MI_NOTES, MI_CCOUT, MI_THRU, MI_REMOTE, MI_LEARN,
+        MI_LCLEAR, MI_SERIAL_IN MI_RESTORE, MI_CPU, MI_CLK, MI_PANEL, MI_RESET, MI_ABOUT, MI_COUNT MI_SERIAL_OUT };
+@@ -37,11 +37,13 @@
+                                                                                              * in CONTROL) */
+ #define MI_VALUES MI_PANEL
+ #define SILLAGE_PALETTES 2u
++/* Trial only: deliberately excluded from saved settings. Power-on uses the original LCD initialization. */
++static uint8_t screen_gamma_trial;
+ static const char *const MI_NAME[MI_COUNT] = {"PALETTE", "PLAYHEAD", "LARGE", "ANIM",
+ #if !BOARD_SMK37
+                                               "LEDS",
+ #endif
+-                                              "SCREEN OFF", "HINTS", "HOLD", "KNOB ACCEL", "BPM LOCK",
++                                              "SCREEN OFF", "HINTS", "GAMMA TEST", "HOLD", "KNOB ACCEL", "BPM LOCK",
+                                               "SCALE LEDS", "STEP PREVIEW", "RETURN", "KEEP SENDS",
+ #if BOARD_SMK37
+                                               "KEY VELOCITY",
+@@ -68,6 +70,7 @@
+ #endif
+     MTAB_DISPLAY,                                                           /* SCREEN OFF (1.1.5) */
+     MTAB_DISPLAY,                                                           /* (Skiff U4) HINTS */
++    MTAB_DISPLAY,                                                           /* GAMMA TEST */
+     MTAB_CONTROL, MTAB_CONTROL, MTAB_CONTROL,                               /* HOLD KNOB ACCEL BPM LOCK ((Skiff U2) FX
+                                                                              * LATCH gone: a locked FX layer latches) */
+     MTAB_CONTROL,                                                           /* SCALE LEDS (1.2) */
+@@ -175,7 +178,7 @@
+ static uint32_t menu_n(uint32_t row)
+ {
+     return row == MI_COLOR ? SILLAGE_PALETTES + (uint32_t)cpal_stored() :
+-           row == MI_LOWCUT || row == MI_RETURN || (row >= MI_CLICK && row <= MI_COUNTIN) ? 3u :
++           row == MI_GAMMA || row == MI_LOWCUT || row == MI_RETURN || (row >= MI_CLICK && row <= MI_COUNTIN) ? 3u :
+            row == MI_HOLD ? 4u : row == MI_LEDS ? LEDS_COUNT : row == MI_SCROFF ? NELEM(SCROFF_N) :
+            row == MI_CLOCK ? NELEM(N_CLOCK) : row == MI_TUNE ? 101u : row == MI_CPU ? 1u + FELUCCA_CPU2 :
+            MI_TCH(row) ? 33u : row == MI_LEARN || row == MI_LCLEAR ? 1u :
+@@ -194,6 +197,7 @@
+     switch (row) {
+     case MI_COLOR: return cpal_on() ? SILLAGE_PALETTES : settings.palette;
+     case MI_PHEAD: return ui_ph_line != 0;
++    case MI_GAMMA: return screen_gamma_trial;
+     case MI_LOWCUT: return settings.lowcut % 3u;
+     case MI_HOLD: return settings_hold % 4u;
+     case MI_SCROFF: return scr_get();
+@@ -231,6 +235,7 @@
+     switch (row) {
+     case MI_COLOR: return v < SILLAGE_PALETTES ? (v == UI_SKIFF_INDEX ? "NUIT" : "CLAIR") : "CUSTOM";
+     case MI_PHEAD: return v & 1u ? "LINE" : "THEME";
++    case MI_GAMMA: return v == 1u ? "G1.8" : v == 2u ? "G2.5" : "DEFAULT";
+     case MI_LOWCUT: return SPK_EQ[v % 3u];
+     case MI_HOLD: return HOLD_N[v & 3u];
+     case MI_CLICK: return CLICK_N[v % 3u];
+@@ -322,6 +327,15 @@
+         theme_apply();                                 /* (the menu signature redraws) */
+         ui.force = 1;
+         break;
++    case MI_GAMMA:
++        if (v < 3u) {
++            screen_gamma_trial = (uint8_t)v;
++#if defined(SILLAGE_LCD_GAMMA)
++            lcd_gamma_trial(v);
++#endif
++            ui.force = 1;
++        }
++        break;
+     case MI_PHEAD: ui_ph_line = (uint8_t)(v & 1u); ui.force = 1; break;
+     case MI_LOWCUT: settings.lowcut = v; fx_lowcut = (uint8_t)v; break;
+     case MI_HOLD: settings_hold = (uint8_t)v; break;
+@@ -365,6 +379,7 @@
+ static void settings_reset(void)
+ {
+     uint32_t i;
++    menu_put(MI_GAMMA, 0);
+     menu_put(MI_COLOR, UI_SKIFF_INDEX);
+     ui_prefs = PREF_BPM_LOCK;
+     fx_usb_fixed = 0;
+--- a/firmware/src/panel.c
++++ b/firmware/src/panel.c
+@@ -6,6 +6,9 @@
+  * (hold OCT- and OCT+ while powering on): FELUCCA asks for each label in turn.
+  * The learned table lives in .noinit and, with FELUCCA_FLASH, in flash with
+  * the settings (project.c); read it back with `fm1t memr` to bake it in. */
++#ifndef CAST
++#define CAST(x) ((void)0)                       /* ((Skiff Studio) core.h's cast hook: a test built without core.h) */
++#endif
+ enum { B_FX, B_SCL, B_ENV, B_LFO, B_EDIT, B_GLO, B_HOME, B_SAVE, B_ARP, B_SEQ, B_PLAY, B_REC,
+        B_OCTDN, B_OCTUP, NB };
+ enum { EN_SELECT, EN_ALGO, EN_PRESET, EN_K1, EN_K2, EN_K3, EN_K4, NE };
+@@ -90,6 +93,8 @@
+ static int32_t panel_enc(uint32_t role)
+ {
+     int32_t s = fm1_enc_take(panel.enc[role]) * panel.dir[role];
++    if (s)                                      /* (Skiff Studio: the knob's own detents; REMOTE's come as MIDI) */
++        CAST(cast_rec('K', role | (uint32_t)cast.pass << 8, (uint32_t)s));
+     if (rmt_steps[role]) {
+         fm1_irq_off();
+         s += rmt_steps[role];
+--- a/firmware/src/params.c
++++ b/firmware/src/params.c
+@@ -574,7 +574,7 @@
+        GR_SMIX,                    /* (Skiff, #21) EDIT > SAMPLES: a user sample's LEVEL, REVERB, DELAY (ui.c smx_zone) */
+        GR_LMIX,                    /* (2.0, #36, the user's pick 1A) EDIT > LANE MIX: a kit's lane levels and pans */
+        GR_FOLLOW,                  /* (2.1) SCL > FOLLOW: the chord it follows, as CHORD's (ui_graph.c graph_follow) */
+-       GR_FXDLY, GR_FXREV, GR_PRESET_INIT, GR_TRACK_EQ, GR_FINAL_MASTER, GR_BAR };
++       GR_FXDLY, GR_FXREV, GR_PRESET_INIT, GR_TRACK_EQ, GR_FINAL_MASTER, GR_BAR, GR_COPY_ALL };
+ 
+ typedef struct {
+     const char *title;
+@@ -642,6 +642,7 @@
+     {"PRESETS", FAM_SAVE, SC_GLOBAL, GR_BROWSE, {0xFF, 0xFF, 0xFF, 0xFF}},   /* browser: PRESETS knob / KNOB 1 */
+     {"USER", FAM_SAVE, SC_GLOBAL, GR_USER, {0xFF, 0xFF, 0xFF, 0xFF}},       /* user presets: SLOT LOAD ERASE SAVE */
+     {"PATTERNS", FAM_SAVE, SC_GLOBAL, GR_BANK, {0xFF, 0xFF, 0xFF, 0xFF}},   /* (Skiff phase 5) the pool: PATTERN LEN USED CLEAR */
++    {"COPY ALL", FAM_SAVE, SC_GLOBAL, GR_COPY_ALL, {0xFF, 0xFF, 0xFF, 0xFF}},
+     {"PROJECT", FAM_SAVE, SC_GLOBAL, GR_SLOTS, {G_SLOT, 0xFF, G_LOAD, G_SAVE}},
+     {"ARP", FAM_ARP, SC_TRACK, GR_ARP, {P_AMODE, P_ARATE, P_AOCT, P_AGATE}},
+     {"ARP 2", FAM_ARP, SC_TRACK, GR_ARP2, {P_ASWING, P_APROB, P_AHOLD, P_AORDER}},
+--- a/firmware/src/perform.c
++++ b/firmware/src/perform.c
+@@ -657,63 +657,25 @@
+     }
+ }
+ 
+-/* One channel of the dry state-variable filter: summed Q15 / 4.
+- * Wide products avoid wrapping when several tracks feed the dry mix. */
++/* one channel of a state-variable filter (k = 1): x in Q15 >> 2 */
+ static inline int32_t pf_svf(int32_t x, int32_t *z, const int16_t *c, int hp)
+ {
+-    int32_t v3 = x - z[1];
+-    int32_t v1=(int32_t)(((int64_t)c[0]*z[0]+(int64_t)c[1]*v3)>>14);
+-    int32_t v2=z[1]+(int32_t)(((int64_t)c[1]*z[0]+(int64_t)c[2]*v3)>>14);
++    int32_t v3 = x - z[1], v1 = (c[0] * z[0] + c[1] * v3) >> 14, v2 = z[1] + ((c[1] * z[0] + c[2] * v3) >> 14);
+     z[0] = 2 * v1 - z[0];
+     z[1] = 2 * v2 - z[1];
+     return hp ? x - v1 - v2 : v2;
+ }
+ 
+-/* FX FILTER shapes the direct mix only, after THROW's sends are captured.
+- * Bus returns enter later and are never filtered here. Wider accumulators
+- * preserve headroom when several tracks feed the dry mix at once. */
+-static __attribute__((noinline)) AUDIO_RAM void perf_filter_dry(int32_t *bl,int32_t *br,uint32_t n)
+-{
+-    if(!((pf.act0|pf.act)&(PF_BIT(PF_LPF)|PF_BIT(PF_HPF))) && !perf_k[0] &&
+-       !pf.la && !pf.ha && pf.lc==PF_TOP && !pf.hc)return;
+-    uint32_t i,a=pf.act0;int32_t lt,ht;
+-    for(i=0;i<n;i++){
+-        int32_t l=bl[i],r=br[i];
+-        if(i==pf.split)a=pf.act;
+-        lt = (a & PF_BIT(PF_LPF)) || perf_k[0] < 0 || pf.lc < PF_TOP ? 32768 : 0;
+-        pf.la += clamp(lt - pf.la, -SL_SLOPE, SL_SLOPE);
+-        if (pf.la) {
+-            int32_t fl = pf_svf(clamp(l >> 2, -262143, 262143), &pf.lz[0], pf.lk, 0) * 4;
+-            int32_t fr = pf_svf(clamp(r >> 2, -262143, 262143), &pf.lz[2], pf.lk, 0) * 4;
+-            l = pf_mix(l, fl, pf.la);
+-            r = pf_mix(r, fr, pf.la);
+-        } else {
+-            pf.lz[0] = pf.lz[1] = pf.lz[2] = pf.lz[3] = 0;
+-        }
+-        ht = (a & PF_BIT(PF_HPF)) || perf_k[0] > 0 || pf.hc > 0 ? 32768 : 0;
+-        pf.ha += clamp(ht - pf.ha, -SL_SLOPE, SL_SLOPE);
+-        if (pf.ha) {
+-            int32_t fl = pf_svf(clamp(l >> 2, -262143, 262143), &pf.hz[0], pf.hk, 1) * 4;
+-            int32_t fr = pf_svf(clamp(r >> 2, -262143, 262143), &pf.hz[2], pf.hk, 1) * 4;
+-            l = pf_mix(l, fl, pf.ha);
+-            r = pf_mix(r, fr, pf.ha);
+-        } else {
+-            pf.hz[0] = pf.hz[1] = pf.hz[2] = pf.hz[3] = 0;
+-        }
+-        bl[i]=l;br[i]=r;
+-    }
+-}
+-
+ static __attribute__((noinline)) void perf_switch(uint32_t a) { perf_buf_select(perf_pick(a)); }
+ 
+ /* the UI: OCT UP / DN is the buffer effect playing (KNOB 4 is its shimmer, the card says so) */
+ static int perf_harm_on(void) { return (PF_HARM >> perf_pick(perf_act)) & 1u; }
+ 
+-/* After the master level: buffer effects and CRUSH. FILTER runs on dry only. */
++/* after the master level: the buffer effect, LPF, HPF, CRUSH on l / r (stereo, Q15) */
+ static __attribute__((noinline)) AUDIO_RAM void perf_block(int32_t *bl, int32_t *br, uint32_t n)
+ {
+     uint32_t i, a = pf.act0, sh, hold;
+-    int32_t c = perf_k[1], ct;
++    int32_t c = perf_k[1], lt, ht, ct;
+     if (c)
+         pf.cc = c;
+     ct = c ? 32768 : 0;
+@@ -730,6 +692,26 @@
+         }
+         if (pf.mode != BM_NONE)
+             perf_buf(&l, &r);
++        lt = (a & PF_BIT(PF_LPF)) || perf_k[0] < 0 || pf.lc < PF_TOP ? 32768 : 0;
++        pf.la += clamp(lt - pf.la, -SL_SLOPE, SL_SLOPE);
++        if (pf.la) {
++            int32_t fl = pf_svf(clamp(l >> 2, -32767, 32767), &pf.lz[0], pf.lk, 0) << 2;
++            int32_t fr = pf_svf(clamp(r >> 2, -32767, 32767), &pf.lz[2], pf.lk, 0) << 2;
++            l = pf_mix(l, fl, pf.la);
++            r = pf_mix(r, fr, pf.la);
++        } else {
++            pf.lz[0] = pf.lz[1] = pf.lz[2] = pf.lz[3] = 0;
++        }
++        ht = (a & PF_BIT(PF_HPF)) || perf_k[0] > 0 || pf.hc > 0 ? 32768 : 0;
++        pf.ha += clamp(ht - pf.ha, -SL_SLOPE, SL_SLOPE);
++        if (pf.ha) {
++            int32_t fl = pf_svf(clamp(l >> 2, -32767, 32767), &pf.hz[0], pf.hk, 1) << 2;
++            int32_t fr = pf_svf(clamp(r >> 2, -32767, 32767), &pf.hz[2], pf.hk, 1) << 2;
++            l = pf_mix(l, fl, pf.ha);
++            r = pf_mix(r, fr, pf.ha);
++        } else {
++            pf.hz[0] = pf.hz[1] = pf.hz[2] = pf.hz[3] = 0;
++        }
+         {   /* CRUSH: fewer bits, a held sample (KNOB 2) */
+             pf.cw += clamp(ct - pf.cw, -SL_SLOPE, SL_SLOPE);
+             if (pf.cw) {
+--- a/firmware/src/seq.c
++++ b/firmware/src/seq.c
+@@ -1203,6 +1203,7 @@
+     int32_t e;
+     while ((e = smk_extkey_take()) >= 0) {
+         uint32_t bed = (uint32_t)e >> 8, k = bed < 5u ? bed + 27u : bed;
++        CAST(cast_rec('X', (uint32_t)e, fm1_in.buttons));   /* (Skiff Studio: the event, the buttons it saw) */
+         if (k < 27u || k >= KB_N)
+             continue;
+         if (e & 0xFF) {
+@@ -1237,6 +1238,12 @@
+     ch = cur ^ kb_prev;                           /* keys also sound while entering steps */
+     if (!ch)
+         return;
++    CAST(cast_rec('N', cur, fm1_in.buttons));    /* (Skiff Studio: the keys and buttons this block sees) */
++#if BOARD_SMK37 && FELUCCA_CAST
++    for (k = 0; cast.on == 1u && k < 27u; k++)    /* (.. and the velocity of each key struck: KB_VEL) */
++        if ((ch & cur) >> k & 1u)
++            cast_rec('V', k, fm1_in.key_vel[kb_bed(k)]);
++#endif
+     if (kb_boot_hold) {                           /* #137: under the splash; their release is silent too */
+         for (k = 0; k < 27u; k++)
+             if ((ch & cur) >> k & 1u)
+@@ -1290,6 +1297,7 @@
+     kb_prev = cur;
+ }
+ 
++
+ /* -------------------------------------------------------- sequencer --- */
+ /* (2.2) MENU > MIDI > CLOCK OUT (ON by default): with the internal clock, MIDI clock out of USB ((SMK-37 Pro) and the
+  * TRS jack, as its 1.4 did): Start when the sequencer starts (after a count-in), its first pulse with step 0, then 24 a
+@@ -2130,6 +2138,7 @@
+ {
+     uint32_t i, pr, ord, seq_n = n, pulse;
+     uint32_t clock_mode = (uint32_t)song.g[G_CLOCK];
++    CAST_BLOCK();                                     /* (Skiff Studio: the block count the cast's stamps use) */
+     if (midi_clock.mode != clock_mode) {
+         seq_stop();
+         memset(&midi_clock, 0, sizeof midi_clock);
+@@ -2163,6 +2172,7 @@
+     pr = panic_req;
+     panic_req = 0;
+     if (midi_in_overflow) {                            /* a lost note-off must never leave a held note */
++        CAST(cast_ev('o'));
+         mi_r = mi_w;
+         memset(midi_sel_on, 0, sizeof midi_sel_on);
+         memset(midi_ch, 0, sizeof midi_ch);
+@@ -2209,6 +2219,7 @@
+         uint32_t d1 = (pkt >> 16) & 0x7Fu, d2 = (pkt >> 24) & 0x7Fu;
+         uint32_t source = midi_in_source[at] ? midi_in_source[at] : 1u, ms = midi_in_ms[at];
+         mi_r++;
++        CAST(cast_rec('M', pkt, ms | (uint32_t)midi_in_source[at] << 24));
+         if (status >= 0xF8u) {
+             if (clock_mode == source) {
+                 if (status == 0xF8u)
+@@ -2232,8 +2243,9 @@
+         seq_tick(&trk[ord & 15u], seq_n);
+     if (cin_flush)
+         cin_record();
+-    if (song.playing)
++    if (song.playing) {
+         click_tick(seq_n);
++    }
+     for (i = 0; i < NPART; i++)
+         arp_step(&trk[i], clock_mode ? seq_n : n, clock_mode && song.playing ? seq_n : n);
+     if (pulse)
+--- a/firmware/src/ui.c
++++ b/firmware/src/ui.c
+@@ -145,9 +145,9 @@
+ #define ui_ph_line (favorites.factory[15][15])
+ /* (Skiff 1.3) MENU > SYSTEM > CPU 2 CORES: the second core from the next power-on (main.c, hal/fm1_cpu1.h), bit 0
+  * of a settings byte ([15][5]); clear: one core, as 1.2. It clears itself when core 1 misreads or stops answering
+- * (main.c). (2.5) CPU2_DEFAULT: the FM-1 starts on 2 CORES (RESET SETTINGS, and every unit once: cpu2_move), so its 16
+- * voices are there out of the box; the SMK-37 stays on 1 CORE until its second core is tried on the unit; the browser
+- * has none */
++ * ((2.7, #126) or the boot before ended in a crash or a hang; main.c). (2.5) CPU2_DEFAULT: the FM-1 starts on 2
++ * CORES (RESET SETTINGS, and every unit once: cpu2_move), so its 16 voices are there out of the box; the SMK-37 stays
++ * on 1 CORE until its second core is tried on the unit; the browser has none */
+ #define CPU2_BYTE (favorites.factory[15][5])
+ #define CPU2_SET (CPU2_BYTE & 1u)
+ #if FELUCCA_CPU2 && !BOARD_SMK37 && !defined(FELUCCA_WEB)
+@@ -404,6 +404,8 @@
+ #define SPICK_SOUND (NPAT + 6u)                /* ((2.0, #30, the user's pick 2A) the track's sound now onto the entry, */
+ #define SPICK_NOSND (NPAT + 7u)                /* its sound taken off: bank.c song_snd) */
+ static struct { uint8_t entry, pick, pick_at; } sg __attribute__((section(".pool")));
++static uint8_t copy_all_src, copy_all_dst = 1;
++static int song_copy_all(uint32_t source, uint32_t dest);
+ 
+ /* MENU > DISPLAY > SCREEN OFF (1.1.5): after a while with no input on the panel the screen and its backlight go off
+  * (a picture held for hours can stay faintly on the panel); the sound, the sequencer, MIDI and USB go on, the LEDs
+@@ -2572,7 +2574,7 @@
+         return 0;
+     if (pg->graph == GR_EVENTS)                  /* AUTOMATION: no knob is an action, OCT+ adds / toggles (ev_oct); */
+         return ui.ev_top ? 8u : 16u;             /* ((Skiff U3, R5) its top row: CLEAR on KNOB 4) */
+-    if (pg->graph == GR_BAR) return 16u;
++    if (pg->graph == GR_BAR || pg->graph == GR_COPY_ALL) return 16u;
+     if (pg->graph == GR_SONG) return 16u;       /* (Skiff phase 5) SONG: so too; OCT+ plays or sets (song_oct) */
+     if (pg->graph == GR_USER)
+         return 14u;                              /* LOAD ERASE (or NAME, ui.act2) SAVE */
+@@ -2592,7 +2594,8 @@
+ /* the action OCT+ does: its column + 1, 0 = none picked yet */
+ static uint32_t act_col(void)
+ {
+-    if (!ui.home && ((cur_page()->graph == GR_EVENTS && !ui.ev_top) || cur_page()->graph == GR_SONG)) return 5u;
++    if (!ui.home && ((cur_page()->graph == GR_EVENTS && !ui.ev_top) || cur_page()->graph == GR_SONG ||
++                     cur_page()->graph == GR_COPY_ALL)) return 5u;
+     if (!ui.home && cur_page()->graph == GR_BANK) return 4u;
+     return ui.act;
+ }
+@@ -2626,6 +2629,7 @@
+     uint32_t id = cur_page()->id[c & 3u];
+     if (cur_page()->graph == GR_EVENTS) return ui.ev_top ? "CLEAR" : ev_act_name();
+     if (cur_page()->graph == GR_SONG) return song_act_name();
++    if (cur_page()->graph == GR_COPY_ALL) return "COPY ALL";
+     if (cur_page()->graph == GR_USER)
+         return c == 2u && ui.act2 ? "NAME" : UP_GO[(c + 2u) % 3u];
+     if (cur_page()->graph == GR_SLOTS && c == 1u)
+--- a/firmware/src/ui_draw.c
++++ b/firmware/src/ui_draw.c
+@@ -877,6 +877,17 @@
+     char val[12];
+     const char *unit;
+     (void)motion_mask(song.sel, card_mot_mask);       /* (PLAY OFF: no scan) */
++    if (!ui.home && cur_page()->graph == GR_COPY_ALL) {
++        char source[6] = {(char)('0' + (copy_all_src + 1u) / 10u), (char)('0' + (copy_all_src + 1u) % 10u),
++                          ' ', (char)('A' + copy_all_src), 0};
++        char dest[6] = {(char)('0' + (copy_all_dst + 1u) / 10u), (char)('0' + (copy_all_dst + 1u) % 10u),
++                        ' ', (char)('A' + copy_all_dst), 0};
++        draw_column(0, "SOURCE", source, "", VR_LIVE, -1, ICON_NONE);
++        draw_column(1, "DEST", dest, "", VR_LIVE, -1, ICON_NONE);
++        draw_column(2, "SCOPE", "T1-T8", "", VR_LIVE, -1, ICON_NONE);
++        draw_column(3, "ACTION", "COPY", "", VR_LIVE, -1, ICON_NONE);
++        return;
++    }
+     if (!ui.home && cur_page()->graph == GR_BAR) {
+         uint32_t span = bar_steps(TSEL);
+         if (span)
+--- a/firmware/src/ui_graph.c
++++ b/firmware/src/ui_graph.c
+@@ -1618,19 +1618,22 @@
+ }
+ 
+ #include "ui_home.c"                                  /* Skiff: HOME's four tracks (graph_tracks, home_sig) */
+-/* (2.5, #97, the user's 8C) MENU > LARGE on HOME: the strip under the tall cards names the six tracks' sounds, two
+- * columns of three, the selected one a band of its colour (the themes' lanes as HOME's: CRYPT's stone, NEON's sign,
++/* MENU > LARGE on HOME: two columns sized for every track, the selected
++ * one a band of its colour (the themes' lanes as HOME's: CRYPT's stone, NEON's sign,
+  * QUARK's beam); HOME tapped: the scope, as before */
+ static void graph_names(void)
+ {
+     uint32_t k;
+-    int32_t rh = ((int32_t)graph_h() - 8) / 3;
++    uint32_t rows = (NTRK + 1u) / 2u;
++    int32_t rh = ((int32_t)graph_h() - 2 * (int32_t)rows - 2) / (int32_t)rows;
++    const aafont_t *font = AF_M_CAP_H <= rh ? &AF_M : &AF_S;
++    int32_t text_y = font == &AF_M ? CAP_IN(M, rh) : CAP_IN(S, rh);
+     char name[20], d[2] = {0, 0};
+     cv_rect(0, 0, 240, (int32_t)graph_h(), T_BG);
+     for (k = 0; k < NTRK; k++) {
+         const track_t *t = &trk[k];
+         int sel = k == song.sel, ib = sel && !ux.quark;
+-        int32_t x = 3 + (int32_t)(k / 3u) * 118, y = 2 + (int32_t)(k % 3u) * (rh + 2);
++        int32_t x = 3 + (int32_t)(k / rows) * 118, y = 2 + (int32_t)(k % rows) * (rh + 2);
+         uint16_t col = t->p[P_MUTE] ? T_DIM : T_TRK(k), lane = sel ? (ux.quark ? ux_mix(col, T_BG, 80) : col) :
+                                                                 ux.quark ? T_BG : T_SURF;
+         if (ux.crypt && !sel)
+@@ -1645,9 +1648,9 @@
+             cv_rect(x, y + rh - 1, 116, 1, col);
+         }
+         d[0] = (char)('1' + k);
+-        cv_text_on(x + 6, y + CAP_IN(M, rh), &AF_M, d, ib ? T_INK : col, lane);
++        cv_text_on(x + 6, y + text_y, font, d, ib ? T_INK : col, lane);
+         sound_name(t, name);
+-        cv_free_text(x + 22, y + CAP_IN(M, rh), &AF_M, name[0] ? name : "--", ib ? T_INK : T_TEXT, lane, 116 - 26);
++        cv_free_text(x + 22, y + text_y, font, name[0] ? name : "--", ib ? T_INK : T_TEXT, lane, 116 - 26);
+     }
+ }
+ 
+@@ -1666,6 +1669,8 @@
+                                                       * LARGE's names): on a change */
+         return ui.home_scope ? h ^ (ui.frame / 2u) : home_sig();
+     h ^= (uint32_t)pg->graph * 131u + TSEL->eng_req + song.sel * 7777u + ui.page * 1291u;
++    if (pg->graph == GR_COPY_ALL)
++        h ^= copy_all_src * 257u + copy_all_dst * 65537u + bank_gen();
+     if (pg->graph == GR_BAR)
+         h ^= (ui.cursor + 64u * bar_dest + 4096u * bar_action) * 65537u + bar_lane * 257u + bar_confirm;
+     if (strip_kind() == SK_TITLE)                    /* MENU > LARGE: the page's title (its engine, its number) */
+@@ -2645,7 +2650,7 @@
+ {
+     static uint32_t meter_at;
+     static char voices[12];
+-#if !FELUCCA_WEB
++#if !FELUCCA_WEB || FELUCCA_CAST
+     static char cpu[12];
+     static uint8_t load_pct, peak_pct;
+ #endif
+@@ -2686,9 +2691,9 @@
+         n = str_len(voices);
+         voices[n++] = '/';
+         fmt_int(voices + n, (int32_t)VOICE_BUDGET);
+-#if !FELUCCA_WEB
+-        uint32_t pct = song.cpu_q8 * 100u / 256u;
+-        uint32_t pk = audio_peak_us * 100u / (HALF_FRAMES * 1000000u / FS);
++#if !FELUCCA_WEB || FELUCCA_CAST
++        uint32_t pct = ui_cpu;
++        uint32_t pk = ui_audio_peak * 100u / (HALF_FRAMES * 1000000u / FS);
+         load_pct = (uint8_t)(pct > 100u ? 100u : pct);
+         peak_pct = (uint8_t)(pk > 100u ? 100u : pk);
+         str_cpy(cpu, "CPU ", sizeof cpu);
+@@ -2699,7 +2704,7 @@
+ #endif
+     }
+     cv_text_in(4, 19, 84, &AF_S, voices, T_TEXT, T_SURF);
+-#if FELUCCA_WEB
++#if FELUCCA_WEB && !FELUCCA_CAST
+     cv_text_in(152, 19, 84, &AF_S, "CPU --", T_MID, T_SURF);
+ #else
+     cv_text_in(152, 19, 84, &AF_S, cpu, T_TEXT, T_SURF);
+@@ -2744,8 +2749,10 @@
+ static void graph_scope(uint16_t c)
+ {
+     static int16_t snap[SCOPE_N];
+-    uint32_t w = scope_w, i, trig = 0;
++    uint32_t w, i, trig = 0;
+     int32_t cy = (int32_t)cv_h / 2, py = cy, x, peak = 1500, a = cv_h >= H_GRAPH ? 46 : cy - 6;   /* (LARGE: the strip) */
++    CAST_READ();                                     /* (Skiff Studio: the sound read here, the copy's at the same block) */
++    w = scope_w;
+     if (cv_h >= H_GRAPH && (ux.quark || ux.crypt || ux.skiff)) {   /* (2.5) the tracks' levels: their themes' own */
+         scope_levels();
+         if (ux.quark)
+@@ -2990,6 +2997,14 @@
+             cv_oy = 0;
+             graph_global(c);
+             break;
++        case GR_COPY_ALL: {
++            cv_oy = 0;
++            char route[] = "A > B / ALL 8 TRACKS";
++            route[0] = (char)('A' + copy_all_src);
++            route[4] = (char)('A' + copy_all_dst);
++            panel_note(route, "DESTINATION MUST BE EMPTY", "OCT+ COPY / OCT- BACK");
++            break;
++        }
+         case GR_BAR: {
+             cv_oy = 0;
+             uint32_t span = bar_steps(t), len = (uint32_t)t->p[P_SLEN];
+--- a/firmware/src/ui_input.c
++++ b/firmware/src/ui_input.c
+@@ -358,7 +358,7 @@
+  * buttons of the black FM-1 can be found in the dark; hal/fm1_input.h fm1_led_dim, a short pulse each frame).
+  * MENU > LEDS: DIM HI (default) that glow, DIM LO a darker one (fm1_led_dim_level), OFF no glow (as 1.0); INV
+  * turns it around, as the stock firmware: the idle ones fully lit, the active ones dark, no glow (the ARP beat:
+- * lit / dark). The keys' own maps (keys_own) stay lit or dark in every mode: their dark keys read as dark; only the
++ * lit / dark); ((2.7, #134) but an armed REC breathes: dark, it looked off while armed). The keys' own maps (keys_own) stay lit or dark in every mode: their dark keys read as dark; only the
+  * DRUM grid's keys that do something (grid_glow) glow under it, so STEP on a DRUM track is never a dark
+  * keyboard (the steps of an empty pattern); on it the first step of each four (grid_beats: 1 5 9 13 of a page, where
+  * no hit shows) glows steadier and brighter, so a bar's beats can be counted: DIM HI / DIM LO the mid level
+@@ -407,7 +407,8 @@
+         led_put(nl, panel.btn[B_FX], 1);                /* FX LATCH: lit while an effect or a macro is on */
+     if (ui.layer)                                       /* the layer's button breathes while its map is up */
+         led_put(nb, panel.btn[layer_btn()], 1);
+-    led_put(nl, panel.btn[B_REC], song.rec != 0u && ui.layer != LAYER_REC);   /* (its layer: it breathes) */
++    led_put(mode == LEDS_INV ? nb : nl, panel.btn[B_REC], song.rec != 0u && ui.layer != LAYER_REC);   /* (its layer:
++                                                         * it breathes; (2.7, #134) INV: armed, it breathes) */
+     k = oct_leds();
+     led_put(nl, panel.btn[B_OCTDN], (int)(k & 1u));
+     led_put(nl, panel.btn[B_OCTUP], (int)((k >> 1) & 1u));
+@@ -1736,6 +1737,14 @@
+         }
+         return;
+     }
++    if (pg->graph == GR_COPY_ALL) {
++        if (slot == 0u)
++            copy_all_src = (uint8_t)clamp((int32_t)copy_all_src + steps, 0, NENT - 1);
++        else if (slot == 1u)
++            copy_all_dst = (uint8_t)clamp((int32_t)copy_all_dst + steps, 0, NENT - 1);
++        ui.force = 1;
++        return;
++    }
+     if (pg->graph == GR_BAR) {
+         uint32_t span = bar_steps(TSEL);
+         bar_confirm = 0;
+@@ -1938,6 +1947,10 @@
+  * the user's data: the dialog */
+ static void act_do(void)
+ {
++    if (cur_page()->graph == GR_COPY_ALL) {
++        song_copy_all(copy_all_src, copy_all_dst);
++        return;
++    }
+     if (cur_page()->graph == GR_BAR) {
+         bar_edit_apply(TSEL);
+         return;
+@@ -2437,6 +2450,8 @@
+ 
+ #if BOARD_SMK37
+ static uint32_t smk_sh_t0;                              /* KNOB BANK as SHIFT (ui_input) */
++static uint32_t smk_btn_seen __attribute__((section(".pool")));   /* the buttons ui_input's last pass saw (smk_ui.c smk_buttons:
++                                                         * as the cast's T told them) */
+ #endif
+ /* (Skiff 2.0) SHIFT held (HOME; the SMK's KNOB BANK too), and a combo of it taken: no HOME tap, no MENU after (the
+  * caller drops ui_input's home_long) */
+@@ -2472,6 +2487,7 @@
+     const uint32_t rec_bit = 1u << panel.btn[B_REC];
+     static uint32_t lock_ms;                            /* BPM LOCK: the last locked SELECT turn (fm1_ms | 1; 0 none) */
+     static uint8_t home_long;                           /* Skiff: HOME held past 0.7 s, the menu closed: MENU when let go */
++    CAST(cast_take(pressed, notes));
+     fm6_poll();                                         /* FM6: PTCH turned -> its patch */
+     unit_g_poll();                                      /* ((Skiff U3, R8) the unit's CLOCK MIDI IN TUNE) */
+     clock_wait_poll();                                  /* (PLAY on an external clock that sends nothing: say so) */
+--- a/firmware/src/ui_menu.c
++++ b/firmware/src/ui_menu.c
+@@ -1,7 +1,7 @@
+ /* SPDX-License-Identifier: GPL-3.0-only
+  * Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments */
+-/* Felucca menu (HOME held): its rows in tabs (1.0.5: DISPLAY CONTROL AUDIO SYSTEM; ALGORITHM between them, PRESETS
+- * within one; no scrolling), the rows in menu_items.c (the settings, shared with the editor's MENU_DESC / MENU_SET).
++/* Felucca menu (HOME held): its rows in tabs (1.0.5: DISPLAY CONTROL AUDIO SYSTEM; ALGORITHM ((2.7) or SELECT) between
++ * them, PRESETS within one; no scrolling), the rows in menu_items.c (the settings, shared with the editor's MENU_DESC / MENU_SET).
+  * No BACK row: HOME closes it (ui_input.c). The two-valued rows are bits of ui_prefs (MENU_FLAGS). PRESETS scrolls from
+  * ABOUT through all credits (OCT- back to the tabs). ui.menu: 1 the tabs, 2 information. */
+ /* ------------------------------------------------------------ menu --- */
+@@ -424,7 +424,7 @@
+           (ui.menu == 2 ? ui.menu_scroll * 48611u : 0u) +
+           /* (1.2.1) what the rows show besides their values: the load SYSTEM > CPU shows, so a change of it redraws (the
+            * rows stayed as drawn until the cursor moved); ((1.3) LEARN's count and state; CPU's STOP / RESTART) */
+-          song.cpu_q8 * 100u / 256u * 12289u + ml_count() * 2741u + ui.ml.on * 3463u +
++          ui_cpu * 12289u + ml_count() * 2741u + ui.ml.on * 3463u +
+           (uint32_t)transport_busy() * 40503u;
+     for (k = 0; k < MI_VALUES; k++)                     /* ((Skiff, after 1.3.1) every row's value, wherever it lives, so a
+                                                          * step redraws it: the list of them by hand this replaces had
+@@ -513,16 +513,17 @@
+         page_entered();
+ }
+ 
+-/* menu: ALGORITHM steps between the tabs, PRESETS between the rows of one (both wrap; a tab comes back at the row
+- * last picked in it), any of KNOB 1..4 or OCT+ / OCT- change a value (menu_items.c menu_step), OCT+ opens CALIBRATION /
+- * ABOUT (OCT- nothing there); OCT- in ABOUT goes back to the tabs. HOME closes it, from ABOUT too (ui_input.c) */
++/* menu: ALGORITHM ((2.7) or SELECT) steps between the tabs, PRESETS between the rows of one (both wrap; a tab comes
++ * back at the row last picked in it), any of KNOB 1..4 or OCT+ / OCT- change a value (menu_items.c menu_step), OCT+
++ * opens CALIBRATION / ABOUT (OCT- nothing there); OCT- in ABOUT goes back to the tabs. HOME closes it, from ABOUT too
++ * (ui_input.c). (The footer says ALGO TAB only: a fourth hint would not fit) */
+ static void menu_move(int32_t s)                       /* PRESETS: the next / previous row of the tab */
+ {
+     uint32_t t = menu_tab(), f = mtab_first(t), n = mtab_rows(t), k = (ui.menu_sel - f + (s > 0 ? 1u : n - 1u)) % n;
+     ui.menu_sel = (uint8_t)(f + k);
+     ui.menu_row[t] = (uint8_t)k;
+ }
+-static void menu_tab_go(int32_t s)                     /* ALGORITHM: the next / previous tab, at its last row */
++static void menu_tab_go(int32_t s)                     /* ALGORITHM, SELECT: the next / previous tab, at its last row */
+ {
+     uint32_t t = menu_tab(), k;
+     ui.menu_row[t] = (uint8_t)(ui.menu_sel - mtab_first(t));
+@@ -544,7 +545,7 @@
+     }
+     if ((s = panel_enc(EN_PRESET)) != 0)
+         menu_move(s);
+-    if ((s = panel_enc(EN_ALGO)) != 0)
++    if ((s = panel_enc(EN_ALGO) + panel_enc(EN_SELECT)) != 0)   /* ((2.7) SELECT too: it turns pages elsewhere) */
+         menu_tab_go(s);
+     for (s = 0, k = 0; k < 4u; k++)                    /* KNOB 1..4, any of them */
+         s += panel_enc(EN_K1 + k);
+--- a/firmware/src/usb.c
++++ b/firmware/src/usb.c
+@@ -213,7 +213,13 @@
+  * within the poll's 0.5 ms. Producers never overlap: the audio ISR (only a nested TIMER5, which produces nothing, can
+  * preempt it), TIMER5 outside a render, the main loop with IRQs off. (SMK-37) the TRS jack takes the same events (mo_trs,
+  * its own read index rt): a slot is free once both have passed it. Off the ISR's merged globals (the ISR's code keeps
+- * its layout) and out of .pool (the SMK's is near its guard) */
++ * its layout) and out of .pool (the SMK's is near its guard). (A host test on macOS: none, Mach-O names a section
++ * "segment,section") */
++#ifdef __MACH__
++#define MO_SECTION
++#else
++#define MO_SECTION __attribute__((section(".bss.mo")))
++#endif
+ static struct {
+     uint32_t due[MQO];
+     uint32_t tick, now;          /* the block being rendered plays at; TIMER5's tick */
+@@ -222,7 +228,7 @@
+     volatile uint32_t rt;        /* the TRS jack's read index */
+ #endif
+     uint8_t wait;                /* polls the last packet has waited for the host */
+-} mo __attribute__((section(".bss.mo")));
++} mo MO_SECTION;
+ 
+ /* (2.2) MENU > MIDI's settings the ISRs read, in the unit's settings (ui.c mset_io: favorites.factory; a build without
+  * the UI: none, every one at its default, 0): NOTES OUT and the switches in [15][17] (MO_*), REMOTE's channel in
+--- a/web/emu/build.sh
++++ b/web/emu/build.sh
+@@ -19,6 +19,18 @@
+     "-DFELUCCA_VERSION=\"$VERSION\"" -Ibuild/gen -Ifirmware/src \
+     --no-entry -sSTANDALONE_WASM -sSTACK_SIZE=1048576 -sINITIAL_MEMORY=33554432 -sFILESYSTEM=0 \
+     -o build/emu/felucca.wasm web/emu/felucca_web.c
++# (Skiff Studio) the editor's Screen tab: the same sources with the cast's copy (web/emu/cast_follow.c)
++mkdir -p build/cast
++# shellcheck disable=SC2086
++emcc ${EMU_OPT:--O2} -ffp-contract=off -std=gnu99 -w ${EMU_CFLAGS:-} \
++    "-DFELUCCA_VERSION=\"$VERSION\"" -DFELUCCA_CAST=1 -Ibuild/gen -Ifirmware/src \
++    --no-entry -sSTANDALONE_WASM -sSTACK_SIZE=1048576 -sINITIAL_MEMORY=33554432 -sFILESYSTEM=0 \
++    -o build/cast/felucca_cast.wasm web/emu/cast_follow.c
++# shellcheck disable=SC2086
++emcc ${EMU_OPT:--O2} -ffp-contract=off -std=gnu99 -w ${EMU_CFLAGS:-} \
++    "-DFELUCCA_VERSION=\"$VERSION\"" -DFELUCCA_CAST=1 -DBOARD_SMK37=1 -Ibuild/gen -Ifirmware/src \
++    --no-entry -sSTANDALONE_WASM -sSTACK_SIZE=1048576 -sINITIAL_MEMORY=33554432 -sFILESYSTEM=0 \
++    -o build/cast/felucca_cast_smk.wasm web/emu/cast_follow.c   # (an SMK-37's: INFO 59 01's bit 2)
+ [ "${EMU_PREVIEW:-1}" = 0 ] && PREVIEW='' || PREVIEW=' (preview)'
+ sed -e "s/@VERSION@/$VERSION/g" -e "s/@PREVIEW@/$PREVIEW/g" web/emu/index.html > build/emu/index.html
+ cp web/emu/worklet.js build/emu/
+--- /dev/null
++++ b/web/emu/cast_follow.c
+@@ -0,0 +1,502 @@
++/* SPDX-License-Identifier: GPL-3.0-only */
++/* (Skiff Studio) the live screen's copy: Skiff itself, the web build Try Skiff runs (felucca_web.c), follows an FM-1's
++ * cast records (firmware/src/cast.c; web/EDITOR_PROTOCOL.md "Cast") as they arrive, and so draws the unit's screen
++ * with Skiff's own drawing code. Built as felucca_cast.wasm (web/emu/build.sh); the page is the editor's Screen tab:
++ *   1. one instance: web_nor_erase, web_boot (an empty unit), then web_restore_object for each object of the unit's
++ *      backup; its NOR (web_nor) is then the unit's flash;
++ *   2. a fresh instance (clean RAM, as the unit's power-on after the cast's restart) gets that NOR, then the records:
++ *      four words each into cf_buf(), cf_push(n), and cf_run() replays what has come: the boot at B, each frame once
++ *      its e (drawn) has come, the takes between frames once their pass is complete; and every frame the page sends
++ *      the unit after its CAST 1: cf_req_buf / cf_req_push(n), each run at the unit's R (cf_request);
++ *   3. the screen: web_screen / web_screen_draws, as Try Skiff's.
++ * The steps are those of a replayer first run on the computer, which recordings of the unit
++ * checked: the main loop as the unit's (a frame at each F with its readings and takes, drawn with the audio run to
++ * its pieces' stamps; ui_input passes between frames at the takes' blocks, idle ones at each ms and after each audio
++ * half); the audio ISR's records (N keys, M MIDI, o overflow, s shed) at their block. A half's length and the unit's
++ * ms boundaries are estimated as the records come (the replayer fits them over a whole recording).
++ * -DBOARD_SMK37=1 (felucca_cast_smk.wasm): an SMK-37 Pro's cast (B's CAST_SMK layout): its T and U, the outer keys (X)
++ * and the velocities (V) at their block, the pads' taps (D) and the faders, wheels and pedal (A) for its frame's
++ * smk_ui_frame; its wheels' MIDI comes as the unit's M records (SMK_MIDI_PUT: none of the copy's own). */
++#ifndef FELUCCA_CAST
++#define FELUCCA_CAST 1
++#endif
++static unsigned char cf_c1;                         /* B: the unit's second core runs (its voice budget, core.h) */
++#define C1_ON() cf_c1                               /* (every track rendered here: bit for bit the two cores', */
++#define C1_RUN(fn, arg) 0                           /* tests/dualcore_test.c) */
++#define C1_WAIT() 0
++static void cf_piece(void);
++static void cf_read(void);
++#define GFX_HOOKS 0
++#define GFX_HOOK_TEXT(x0, y0, x1, y1, s, flags) ((void)0)
++#define GFX_HOOK_BLIT(x, y, r0) ((void)0)
++#define GFX_HOOK_BEGIN() cf_piece()                 /* gfx.c cv_begin: a piece of the frame begins */
++#define GFX_HOOK_PIXELS(n) ((void)0)
++#define CAST_READ() cf_read()                       /* ui_graph.c's scope reads the sound: a piece too (layout 4) */
++#define SMK_MIDI_PUT(pkt) ((void)(pkt))             /* (SMK: the wheels' MIDI, the unit's M records instead) */
++#include "felucca_web.c"
++/* the editor's SysEx (editor.c) as the unit runs it, behind the web build (no USB): at each R, the page's frame of
++ * that request through ed_service, so the copy changes what the unit changed (after the Learn build's edlink.h) */
++static uint8_t cf_sxf[700];                         /* the frame for ed_service: the bytes between F0 and F7 */
++static uint32_t cf_sxn;
++static uint8_t cf_sxr;
++#define SXQ 64u
++static uint32_t so_r, so_w;                         /* (usb.c's send queue: always room here) */
++static int ota_frame_get(const uint8_t **p, uint32_t *n)
++{
++    if (!cf_sxr)
++        return 0;
++    *p = cf_sxf;
++    *n = cf_sxn;
++    return 1;
++}
++static void ota_frame_done(void) { cf_sxr = 0; }
++static int ota_wire_send(const uint8_t *p, uint32_t n) { (void)p; (void)n; return 0; }   /* (the copy's replies: dropped) */
++static void audio_silence(void) {}
++static void fl_inval(uint32_t off, uint32_t n) { (void)off; (void)n; }
++static int fl_erase4k(uint32_t off, uint32_t *took) { *took = 0; return st_erase(off); }
++static int fl_write(uint32_t off, const void *p, uint32_t n) { return st_prog(off, p, n); }
++static void cf_wdt_feed(void)                       /* (a flash write while playing stops the transport first: */
++{                                                   /* ed_flash_stop waits for the audio ISR's stop, done here) */
++    if (transport_req == 2u) {
++        seq_stop();
++        transport_req = 0;
++    }
++}
++#define fm1_wdt_feed() cf_wdt_feed()
++#include "../../firmware/src/editor.c"
++#undef fm1_wdt_feed
++#include "../../firmware/src/cast.c"
++
++typedef struct { uint32_t w[4], ty; uint64_t t, b; } cf_rec_t;   /* t, b: the ticks and blocks, unwrapped */
++#define CF_N 16384u
++static cf_rec_t cf_r[CF_N];
++static uint32_t cf_nr, cf_ri, cf_xi;               /* held; the next to replay; the next ISR one (web_cast_block) */
++static uint32_t cf_in[64u * 4u];
++static uint32_t cf_pt, cf_pb;                       /* the last record's raw ticks and blocks */
++static uint64_t cf_lt, cf_lb, cf_bt, cf_bb;         /* the last record's unwrapped ticks and blocks; B's */
++static int cf_seen, cf_booted;
++static uint32_t cf_ver;                             /* B's layout: 3 F's CPU load and P, 4 C's sound and the scope's P */
++static uint32_t cf_board_off;                       /* 1: B's board isn't this copy's (CAST_SMK), nothing replayed */
++static uint32_t n_frames, n_frames_off, n_chk, n_chk_off, n_late, n_shed, n_req, n_req_lost, n_req_missing;
++/* the page's requests, as it sent them after the cast's start (cf_req_push): each runs here at its R */
++typedef struct { uint16_t n; uint8_t b[700]; } cf_frame_t;
++#define CF_RQ 256u                                  /* (the editor's load right after the restart: a burst) */
++static cf_frame_t cf_rq[CF_RQ];
++static uint32_t cf_rq_r, cf_rq_w;
++static uint8_t cf_rq_in[702];
++
++/* ----------------------------------------------------------------- the copy's clock --- */
++static uint64_t now_t, half_n;                      /* the copy's 24 MHz time; halves rendered */
++static double hp = 24e6 * 128.0 / 44100.0, hph;     /* a half's ticks, its phase: half k ends at hph + k * hp */
++static double isr_t;                                /* the audio ISR's ticks a half, by F's CPU load */
++static int64_t ms_off;                              /* fm1_ms = (t - ms_off) / 24000 */
++static double sx, sy, sxx, sxy, sn;                 /* the half's length: a line through the main loop's (b / 4, t) */
++static int in_frame;
++static uint32_t fm_start;                           /* the last F's ms: main.c's wait loop passes while < 15 ms on */
++static uint8_t pend_shed;
++static int idle_ok(void) { return !in_frame && fm1_ms - fm_start < 15u; }
++static void drain(void) { cast.r = cast.w; if (cast.on == 2u) cast.on = 1; }   /* (the copy's own records: dropped) */
++static void set_clock(uint64_t t)
++{
++    now_t = t;
++    web_ticks = (uint32_t)t;
++    fm1_ms = (uint32_t)(((int64_t)t - ms_off) / 24000);
++}
++static uint64_t next_ms_t(void) { return (uint64_t)(ms_off + ((((int64_t)now_t - ms_off) / 24000) + 1) * 24000); }
++static void pass(void) { ui_input(); drain(); }
++static void half(void)
++{
++    if (pend_shed) {                                /* (audio.c fm1_alnk0_irq: shed_req, then shed_voice first) */
++        pend_shed = 0;
++        shed_req = 1;
++    }
++    fm1_alnk0_irq();
++    web_half ^= 1u;
++    half_n++;
++    drain();
++}
++static int is_take(uint32_t ty) { return ty == 'T' || ty == 'U' || ty == 'K'; }
++static int is_isr(uint32_t ty) { return ty == 'N' || ty == 'M' || ty == 's' || ty == 'o' || ty == 'X' || ty == 'V'; }
++static uint32_t pass_of(const cf_rec_t *r) { return r->ty == 'T' ? r->w[3] >> 27 : r->ty == 'K' ? (r->w[2] >> 8) & 31u : 99u; }
++/* (core.h CAST_BLOCK) the unit's ISR records of this block */
++static void web_cast_block(void)
++{
++    for (; cf_xi < cf_nr; cf_xi++) {
++        const cf_rec_t *r = &cf_r[cf_xi];
++        if (!is_isr(r->ty))
++            continue;
++        if (r->b > cast.blocks)
++            break;
++        if (r->b < cast.blocks)
++            n_late++;
++        if (r->ty == 'N') {
++            fm1_in.notes = r->w[2];
++            fm1_in.buttons = r->w[3];
++        } else if (r->ty == 'M') {
++            uint32_t at = mi_w % MQ;
++            midi_in_q[at] = r->w[2];
++            midi_in_ms[at] = r->w[3] & 0xFFFFFFu;
++            midi_in_source[at] = (uint8_t)(r->w[3] >> 24);
++            mi_w++;
++        } else if (r->ty == 'o')
++            midi_in_overflow = 1;
++#if BOARD_SMK37
++        else if (r->ty == 'X') {                    /* (seq.c kb_outer takes it from the queue, as the scan put it) */
++            uint32_t e = r->w[2] & 0xFFFFu, bed = e >> 8;
++            if ((e & 0xFFu) && bed < 37u)
++                fm1_in.key_vel[bed] = (uint8_t)e;
++            fm1_in.buttons = r->w[3];
++            smk_extq[smk_extq_w] = (uint16_t)e;
++            smk_extq_w = (uint8_t)((smk_extq_w + 1u) % SMK_EXTQ);
++        } else if (r->ty == 'V') {
++            if (r->w[2] < 27u)
++                fm1_in.key_vel[kb_bed(r->w[2])] = (uint8_t)r->w[3];
++        }
++#endif
++        else {
++            n_shed++;
++            pend_shed = 1;                          /* (s: put before the half's blocks: at the last one's count) */
++        }
++    }
++}
++/* the copy up to a main-loop record's moment: the halves (by its block count) and the milliseconds in time order,
++ * idle passes after each outside a frame */
++static void advance(const cf_rec_t *r)
++{
++    uint64_t want = r->b / 4u;                      /* (a half is 4 blocks: the main loop sees whole halves) */
++    for (;;) {
++        double th = hph + (double)(half_n + 1u) * hp;
++        uint64_t tm = next_ms_t();
++        if (half_n < want && (th <= (double)tm || tm > r->t)) {
++            set_clock(th < (double)now_t ? now_t : th > (double)r->t ? r->t : (uint64_t)th);
++            half();
++            if (isr_t > 0.0) {                      /* (the main loop runs again once the ISR is done) */
++                double te = th + isr_t;
++                set_clock(te < (double)now_t ? now_t : te > (double)r->t ? r->t : (uint64_t)te);
++            }
++            if (idle_ok())
++                pass();
++        } else if (tm <= r->t) {
++            set_clock(tm);
++            if (idle_ok())
++                pass();
++        } else
++            break;
++    }
++    set_clock(r->t);
++    /* re-anchored: half `want` done by r->t, the next not yet (the audio stops for a flash erase: the phase moves) */
++    if (hph + (double)want * hp > (double)r->t)
++        hph = (double)r->t - (double)want * hp;
++    if (hph + (double)(want + 1u) * hp <= (double)r->t)
++        hph = (double)r->t - (double)(want + 1u) * hp + 1.0;
++}
++static void apply_take(const cf_rec_t *r)
++{
++#if BOARD_SMK37
++    if (r->ty == 'T') {                             /* (18 buttons: what they did in U) */
++        fm1_in.buttons = r->w[2] & 0x3FFFFu;
++        fm1_in.notes = r->w[3] & 0x7FFFFFFu;
++    } else if (r->ty == 'U') {
++        web_notes_pressed |= r->w[2];
++        web_pressed |= r->w[3] & 0x3FFFFu;
++    }
++#else
++    if (r->ty == 'T') {
++        fm1_in.buttons = r->w[2] & 0x3FFFu;
++        web_pressed |= (r->w[2] >> 14) & 0x3FFFu;
++        fm1_in.notes = r->w[3] & 0x7FFFFFFu;
++    } else if (r->ty == 'U')
++        web_notes_pressed |= r->w[2];
++#endif
++    else if (r->ty == 'K') {
++        uint32_t role = r->w[2] & 0xFFu;
++        if (role < NE)
++            web_enc_steps[panel.enc[role] % FM1_NENC] += (int32_t)r->w[3] * panel.dir[role];
++    }
++}
++
++/* an R: the unit handled an editor request here (editor.c ed_service, cmd in a): the page's next frame of that cmd
++ * (those before it never reached the unit) through the copy's own ed_service */
++static void cf_request(const cf_rec_t *r)
++{
++    uint32_t cmd = r->w[2] & 0x7Fu;
++    while (cf_rq_r != cf_rq_w && cf_rq[cf_rq_r % CF_RQ].b[3] != cmd) {
++        cf_rq_r++;
++        n_req_lost++;
++    }
++    n_req++;
++    if (cf_rq_r == cf_rq_w) {                       /* (not in the page's log: a request of another page) */
++        n_req_missing++;
++        return;
++    }
++    memcpy(cf_sxf, cf_rq[cf_rq_r % CF_RQ].b, cf_rq[cf_rq_r % CF_RQ].n);
++    cf_sxn = cf_rq[cf_rq_r % CF_RQ].n;
++    cf_rq_r++;
++    cf_sxr = 1;
++    ed_w.last_ms = fm1_ms;                          /* (the page's keep-alives come as Rs: WATCH stays on) */
++    ed_service();
++    cf_sxr = 0;
++    drain();
++}
++
++/* ------------------------------------------------------------- the draw in pieces --- */
++static const cf_rec_t *fp[256];                     /* the frame's P records: its stamped pieces */
++static uint32_t fpn, fpi, fpc;
++static void cf_piece(void)                          /* a stamped piece: the audio ran before it began */
++{
++    uint32_t k = fpc++;
++    if (fpi < fpn && (fp[fpi]->w[2] & 0xFFFFu) == k) {
++        const cf_rec_t *p = fp[fpi++];
++        while (half_n < p->b / 4u) {
++            double th = hph + (double)(half_n + 1u) * hp;
++            set_clock(th < (double)now_t ? now_t : th > (double)p->t ? p->t : (uint64_t)th);
++            half();
++        }
++        set_clock(p->t);
++    }
++}
++static void cf_read(void) { if (cf_ver >= 4u) cf_piece(); }
++
++/* a frame: F, then up to its e (or the next F) */
++static uint32_t cf_frame(uint32_t i)
++{
++    const cf_rec_t *r = &cf_r[i];
++    uint32_t j, k = 0, fms;
++    int32_t b;
++    advance(r);
++    in_frame = 1;                                   /* (no idle passes from here: the unit is in its frame) */
++    fms = fm1_ms = fm_start = r->w[3];
++    if (cf_ver >= 3u) {                             /* (11-bit readings, the MENU's CPU load) */
++        web_master_adc = (uint32_t)((int32_t)(r->w[2] << 10) >> 21);
++        web_batt_adc = (int32_t)(r->w[2] << 21) >> 21;
++        ui_cpu = (uint8_t)(r->w[2] >> 22);
++        isr_t = (double)ui_cpu / 100.0 * hp;
++    } else {
++        web_master_adc = (uint32_t)(int16_t)(r->w[2] >> 16);
++        web_batt_adc = (int16_t)(r->w[2] & 0xFFFFu);
++    }
++    b = fm1_adc_read(FM1_ADC_BATT);
++    if (b > 0)
++        song.batt_raw = song.batt_raw ? song.batt_raw + (b - song.batt_raw) / 32 : b;
++    master_poll();
++    for (j = i + 1; j < cf_nr && cf_r[j].ty != 'e' && cf_r[j].ty != 'F'; j++)
++        if (cf_r[j].ty == 'H') ui_audio_peak = cf_r[j].w[2];
++    cast.px = 2166136261u;
++    fpn = fpi = fpc = 0;
++    for (j = i + 1; j < cf_nr && cf_r[j].ty != 'e' && cf_r[j].ty != 'F'; j++)
++        if (cf_r[j].ty == 'P' && fpn < 256u)
++            fp[fpn++] = &cf_r[j];
++    for (j = i + 1; j < cf_nr && cf_r[j].ty != 'e' && cf_r[j].ty != 'F'; j++)
++        if (cf_r[j].ty == 'C') {
++            n_chk++;
++            n_chk_off += cast_hash() != cf_r[j].w[2];
++            break;
++        }
++    for (j = i + 1; j < cf_nr && cf_r[j].ty != 'e' && cf_r[j].ty != 'F'; j++)
++        if (cf_r[j].ty == 'R') {                    /* (main.c: ed_service before the frame's ui_input) */
++            advance(&cf_r[j]);
++            cf_request(&cf_r[j]);
++        }
++    for (j = i + 1; j < cf_nr && cf_r[j].ty != 'e' && cf_r[j].ty != 'F'; j++)
++        if (is_take(cf_r[j].ty)) {
++            if (!k) {
++                advance(&cf_r[j]);
++                k = j;
++                fm1_ms = fms;
++            }
++            apply_take(&cf_r[j]);
++        }
++    felucca_dbg.ui_frames++;
++    ui_input();
++#if BOARD_SMK37
++    for (j = i + 1; j < cf_nr && cf_r[j].ty != 'e' && cf_r[j].ty != 'F'; j++)
++        if (cf_r[j].ty == 'A') {                    /* (smk_ui_frame's reading) */
++            uint32_t a = cf_r[j].w[2], w = cf_r[j].w[3], f;
++            for (f = 0; f < 4u; f++)
++                fm1_in.fader[f] = (uint8_t)(a >> (7u * f) & 127u);
++            fm1_in.frames = (a >> 28 & 1u) ? 300u : 0u;
++            fm1_in.wheel[0] = (uint16_t)(w & 1023u);
++            fm1_in.wheel[1] = (uint16_t)(w >> 10 & 1023u);
++            fm1_in.pedal = (uint16_t)(w >> 20 & 1023u);
++        } else if (cf_r[j].ty == 'D') {             /* (its taps, as smk_padq_take gave them) */
++            smk_padq[smk_padq_w] = (uint16_t)cf_r[j].w[2];
++            smk_padq_w = (uint8_t)((smk_padq_w + 1u) % SMK_PADQ);
++        }
++    smk_ui_frame();
++#endif
++    settings_poll();
++    autosave_poll();
++    ui_leds();
++    for (j = i + 1; j < cf_nr && cf_r[j].ty != 'e' && cf_r[j].ty != 'F'; j++)
++        ;
++    if (j >= cf_nr || cf_r[j].ty != 'e') {         /* (no e: the next F came first) */
++        ui_draw();
++        drain();
++        return i;
++    }
++    n_frames++;
++    fms = fm1_ms;
++    cf_piece();                                     /* (main.c's stamp before ui_draw: piece 0) */
++    ui_draw();
++    fm1_ms = fms;
++    drain();
++    advance(&cf_r[j]);
++    n_frames_off += cast.px != cf_r[j].w[2];
++    in_frame = 0;
++    fpn = 0;                                        /* (pieces drawn between frames: no stamps of this frame's) */
++    return j;
++}
++
++/* B: the unit's boot, then its blocks up to B (the splash held for the cast) */
++static void cf_boot(void)
++{
++    const cf_rec_t *B = &cf_r[0];
++    cf_c1 = (unsigned char)(B->w[3] >> 31);
++    web_boot();
++    hph = (double)B->t - (double)(B->b / 4u) * hp;
++    while (half_n < B->b / 4u)
++        half();
++    set_clock(B->t);
++    fm1_ms = B->w[2];
++    cf_ver = (B->w[3] >> 24) & 0x3Fu;
++    cf_board_off = ((B->w[3] >> 30) & 1u) != (uint32_t)BOARD_SMK37;   /* (CAST_SMK: the editor picked another copy) */
++    master_knob = (int32_t)(B->w[3] & 0xFFFFFFu);
++    song.master_q12 = master_of_pot((uint32_t)(master_knob / 16));
++    kb_boot_hold = 0;                               /* (main.c after cast_boot_hold) */
++    lcd_fill(0, 0, 240, 240, T_BG);
++    scrn.idle = fm1_ms;
++    usb.config = 1;                                 /* (the cast comes over USB: on USB power, ui_draw.c's bolt) */
++    usb.suspended = 0;
++    cast.on = 1;
++    cast.w = cast.r = 0;
++    ed_w.on = 1;                                    /* (the unit casts only while WATCHed: cast_cmd) */
++    ed_w.last_ms = fm1_ms;
++    cf_xi = cf_ri = 1;
++    in_frame = 1;                                   /* (from B to the first frame: no passes, as main.c) */
++    cf_booted = 1;
++}
++
++/* -------------------------------------------------------------------- the page's --- */
++EXPORT uint32_t *cf_buf(void) { return cf_in; }
++/* a request the page sent the unit after the cast's start: its whole frame (F0 .. F7, n bytes) in cf_req_buf();
++ * 0 = kept, -1 = not an editor frame or no room */
++EXPORT uint8_t *cf_req_buf(void) { return cf_rq_in; }
++EXPORT int32_t cf_req_push(uint32_t n)
++{
++    cf_frame_t *f;
++    if (n < 6u || n > sizeof cf_rq_in || cf_rq_in[0] != 0xF0u || cf_rq_in[n - 1u] != 0xF7u || cf_rq_w - cf_rq_r >= CF_RQ)
++        return -1;
++    f = &cf_rq[cf_rq_w++ % CF_RQ];
++    f->n = (uint16_t)(n - 2u);
++    memcpy(f->b, cf_rq_in + 1, n - 2u);
++    return 0;
++}
++/* n records (<= 64) from cf_buf, four words each, in the order they came; -1: no room (the copy fell far behind) */
++EXPORT int32_t cf_push(uint32_t n)
++{
++    uint32_t k;
++    if (n > 64u)
++        return -1;
++    if (cf_nr + n > CF_N) {                         /* the replayed ones out (ISR ones until web_cast_block took them) */
++        uint32_t lo = cf_ri < cf_xi ? cf_ri : cf_xi;
++        memmove(cf_r, cf_r + lo, (cf_nr - lo) * sizeof cf_r[0]);
++        cf_nr -= lo;
++        cf_ri -= lo;
++        cf_xi -= lo;
++        if (cf_nr + n > CF_N)
++            return -1;
++    }
++    for (k = 0; k < n; k++) {
++        cf_rec_t *r = &cf_r[cf_nr];
++        const uint32_t *w = &cf_in[4u * k];
++        memcpy(r->w, w, sizeof r->w);
++        r->ty = w[1] >> 24;
++        if (cf_seen) {                              /* (24 MHz ticks wrap every 179 s, blocks every 3.4 h: unwrapped) */
++            r->t = cf_lt + (uint32_t)(w[0] - cf_pt);
++            r->b = cf_lb + ((w[1] - cf_pb) & 0xFFFFFFu);
++        } else {                                    /* (B) */
++            r->t = cf_bt = w[0];
++            r->b = cf_bb = w[1] & 0xFFFFFFu;
++            ms_off = (int64_t)r->t - (int64_t)w[2] * 24000;   /* (B's ms: the first estimate) */
++            cf_seen = 1;
++        }
++        cf_lt = r->t;
++        cf_lb = r->b;
++        cf_pt = w[0];
++        cf_pb = w[1] & 0xFFFFFFu;
++        if (r->ty == 'F' && (int64_t)r->t - (int64_t)w[3] * 24000 < ms_off)
++            ms_off = (int64_t)r->t - (int64_t)w[3] * 24000;   /* (the reads lag: the lowest is the boundary) */
++        if (!is_isr(r->ty)) {                       /* (a half's length from the main loop's records, B's on) */
++            double x = (double)(r->b - cf_bb) / 4.0, y = (double)(r->t - cf_bt);
++            sx += x, sy += y, sxx += x * x, sxy += x * y, sn += 1.0;
++            if (sn >= 200.0 && sn * sxx - sx * sx > 0.0)
++                hp = (sn * sxy - sx * sy) / (sn * sxx - sx * sx);
++        }
++        cf_nr++;
++    }
++    return (int32_t)n;
++}
++/* replays what has come; the frames replayed so far */
++EXPORT uint32_t cf_run(void)
++{
++    if (!cf_booted) {
++        if (!cf_nr || cf_r[0].ty != 'B')
++            return 0;
++        cf_boot();
++    }
++    if (cf_board_off)
++        return 0;
++    while (cf_ri < cf_nr) {
++        const cf_rec_t *r = &cf_r[cf_ri];
++        uint32_t j, k, ps;
++        if (is_isr(r->ty)) {
++            cf_ri++;
++            continue;
++        }
++        if (r->ty == 'F') {
++            for (j = cf_ri + 1; j < cf_nr && cf_r[j].ty != 'e' && cf_r[j].ty != 'F'; j++)
++                ;
++            if (j >= cf_nr)
++                break;                              /* the frame isn't all here yet */
++            cf_ri = cf_frame(cf_ri) + 1u;
++            continue;
++        }
++        if (is_take(r->ty)) {                       /* a wait-loop pass that took something: once it is all here */
++            ps = pass_of(r);
++            for (j = cf_ri + 1; j < cf_nr; j++) {
++                const cf_rec_t *q = &cf_r[j];
++                if (is_isr(q->ty))
++                    continue;
++                if (!is_take(q->ty) || (q->ty != 'U' && pass_of(q) != ps) || q->b != r->b)
++                    break;
++            }
++            if (j >= cf_nr)
++                break;
++            advance(r);
++            for (k = cf_ri; k < j; k++)
++                if (!is_isr(cf_r[k].ty))
++                    apply_take(&cf_r[k]);
++            pass();
++            cf_ri = j;
++            continue;
++        }
++        if (r->ty == 'R') {                         /* (main.c's wait loop: ed_service between ui_input passes) */
++            advance(r);
++            cf_request(r);
++        } else if (r->ty == 'C') {
++            n_chk++;
++            n_chk_off += cast_hash() != r->w[2];
++        }
++        cf_ri++;
++    }
++    return n_frames;
++}
++/* 0 booted, 1 frames replayed, 2 of them unlike the unit's, 3 checks of the music and UI, 4 of them unlike, 5 records
++ * waiting, 6 ISR records taken late, 7 voices shed, 8 editor requests handled (R), 9 the second core (B), 10 the
++ * page's requests the unit never took, 11 Rs the page's log didn't have, 12 the unit is another board (B) */
++EXPORT uint32_t cf_stat(uint32_t k)
++{
++    const uint32_t v[13] = {(uint32_t)cf_booted, n_frames, n_frames_off, n_chk, n_chk_off, cf_nr - cf_ri, n_late,
++                            n_shed, n_req, cf_c1, n_req_lost, n_req_missing, cf_board_off};
++    return k < 13u ? v[k] : 0u;
++}
+--- a/web/emu/felucca_web.c
++++ b/web/emu/felucca_web.c
+@@ -21,10 +21,12 @@
+ #include <stdint.h>
+ 
+ #define FELUCCA_WEB 1
+-/* Exercise the two-core voice budget in one browser audio thread. */
++/* Standalone preview uses sixteen voices; the screen follower uses the unit's reported core state. */
++#ifndef C1_ON
+ #define C1_ON() 1
+ #define C1_RUN(fn, arg) 0
+ #define C1_WAIT() 0
++#endif
+ #ifndef FELUCCA_CDC
+ #define FELUCCA_CDC 0                    /* (Skiff 2.0) as a release (build.py --release): no console, no USB SERIAL row */
+ #endif
+@@ -38,6 +40,31 @@
+ 
+ static uint8_t nor[0x100000];            /* the SPI NOR (erased: 0xFF) */
+ #define SMP_USER_XIP(k) ((const uint8_t *)nor + SMP_USER_BASE + (k) * SMP_USER_SIZE)   /* eng_sample.c */
++#if BOARD_SMK37
++/* ((Skiff Studio) -DBOARD_SMK37=1: the SMK-37 Pro, for the cast's copy of one (felucca_cast_smk.wasm): its input as
++ * smk_ui.c reads it (hal/smk_pads.h as it is; the faders, the wheels, the pedal the cast's A sets), its 18 buttons and
++ * 8 knobs (K1 the MASTER: fm1_adc_read), no TRS jack, no pad LEDs) */
++#include "../../firmware/hal/smk_pads.h"
++#define HOST_FM1_IN 1
++static struct {
++    volatile uint32_t notes, buttons, virt, vtap, vack;
++    uint8_t key_vel[37];
++    uint8_t fader[4];
++    uint16_t wheel[2], pedal, batt;
++    uint32_t frames;
++} fm1_in;
++static void smk_uart_tx_put(uint32_t b) { (void)b; }
++static void smk_uart_tx_rt(uint32_t b) { (void)b; }
++static void smk_uart_tx_init(void) {}
++static void smk_uart_tx_tick(void) {}
++#define SMK_UT_TX_RING 128u
++static uint8_t smk_ut_w, smk_ut_r;
++#define FM1_NBTN 18u
++#define FM1_NENC 8u
++#endif
++#ifndef FM1_NENC
++#define FM1_NENC 7u
++#endif
+ #define main hostsim_main
+ #include "../../tests/hostsim.c"
+ #undef main
+@@ -102,7 +129,7 @@
+     return (int)web_anim_run;
+ }
+ static uint32_t web_pressed, web_released, web_notes_pressed;
+-static int32_t web_enc_steps[7];
++static int32_t web_enc_steps[FM1_NENC];
+ static uint32_t fm1_input_edges(uint32_t *released)
+ {
+     uint32_t p = web_pressed;
+@@ -112,7 +139,12 @@
+     return p;
+ }
+ static uint32_t fm1_input_note_edges(void) { uint32_t n = web_notes_pressed; web_notes_pressed = 0; return n; }
+-static int32_t fm1_enc_take(uint32_t e) { int32_t s = web_enc_steps[e % 7u]; web_enc_steps[e % 7u] = 0; return s; }
++static int32_t fm1_enc_take(uint32_t e)
++{
++    int32_t s = web_enc_steps[e % FM1_NENC];
++    web_enc_steps[e % FM1_NENC] = 0;
++    return s;
++}
+ static void fm1_input_init(void) {}
+ static void fm1_input_tick(void) {}
+ static void fm1_wdt_feed(void) {}
+@@ -120,12 +152,17 @@
+ static void fm1_irq_on(void) {}
+ 
+ /* ----------------------------------------------------------- the screen --- */
++#ifndef WEB_LCD_HOOK
++#define WEB_LCD_HOOK(npx) ((void)0)      /* ((Skiff Studio) the cast's copy: a piece's pixels, as the unit's LCD sends them */
++#endif
+ static uint16_t web_fb[240 * 240];       /* RGB565 as the panel gets it (high byte first) */
+ static uint32_t web_draws;
+ static void lcd_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint16_t c)
+ {
+     uint32_t i, j;
+     uint16_t sw = (uint16_t)((c >> 8) | (c << 8));
++    CAST(cast_px(x | y << 8 | w << 16 | h << 24, c, 0, 0u));   /* ((Skiff Studio) as the unit's lcd.c) */
++    WEB_LCD_HOOK(w * h);
+     for (j = 0; j < h && y + j < 240u; j++)
+         for (i = 0; i < w && x + i < 240u; i++)
+             web_fb[(y + j) * 240u + x + i] = sw;
+@@ -137,6 +174,8 @@
+     for (j = 0; j < h && y + j < 240u; j++)
+         for (i = 0; i < w && x + i < 240u; i++)
+             web_fb[(y + j) * 240u + x + i] = p[j * w + i];
++    CAST(cast_px(x | y << 8 | w << 16 | h << 24, 0u, p, w * h));
++    WEB_LCD_HOOK(w * h);
+     web_draws++;
+ }
+ static void lcd_sync(void) {}
+@@ -149,6 +188,13 @@
+ }
+ static void lcd_wake_now(void) {}
+ static void lcd_init(void) {}
++#if BOARD_SMK37
++static void fm1_led_key(uint32_t id, int on) { (void)id; (void)on; }   /* (the SMK's button LEDs, pads: not shown) */
++static void padled_set(uint32_t pad, uint8_t r, uint8_t g, uint8_t b) { (void)pad; (void)r; (void)g; (void)b; }
++static void padled_flush(void) {}
++#define SMK_TRIM_FLASH 0xC1000u                     /* (main.c: the velocity curves; the copy gets the velocities) */
++static int smk_trim_load(const uint8_t *rec) { (void)rec; return 0; }
++#endif
+ 
+ #include "../../firmware/src/gfx.c"
+ #include "../../firmware/src/panel.c"
+@@ -212,8 +258,19 @@
+ uint32_t _data_start[1], _data_end[1], _data_load[1], _bss_start[1], _bss_end[1];
+ uint32_t _pool_start[1], _pool_end[1], _rt_start[1], _rt_end[1], _rt_load[1], _ramx_start[1], _ramx_end[1];
+ static uint32_t web_master_adc = 700;   /* MASTER, 0..1023 as the ADC reads it */
++static int32_t web_batt_adc = 620;      /* the battery's reading ((Skiff Studio) the cast's copy: the unit's) */
+ enum { FM1_ADC_BATT = 3, FM1_ADC_MASTER = 4 };
+-static int32_t fm1_adc_read(uint32_t ch) { return ch == FM1_ADC_MASTER ? (int32_t)web_master_adc : 620; }
++#if BOARD_SMK37
++static int32_t fm1_adc_read(uint32_t ch)            /* (K1's virtual pot: the cast's F tells its level) */
++{
++    if (ch == FM1_ADC_MASTER)
++        return smk_master = (int32_t)web_master_adc;
++    return web_batt_adc;
++}
++#include "../../firmware/src/smk_ui.c"
++#else
++static int32_t fm1_adc_read(uint32_t ch) { return ch == FM1_ADC_MASTER ? (int32_t)web_master_adc : web_batt_adc; }
++#endif
+ static void fm1_adc_init(void) {}
+ static void fm1_timer5_ack(void) {}
+ static void fm1_timer5_start(void (*isr)(void), uint32_t prio) { (void)isr; (void)prio; }
+@@ -320,6 +377,9 @@
+     fm1_adc_init();
+     panel_init();
+     felucca_init();
++#if BOARD_SMK37
++    smk_ui_boot();                        /* main.c: MASTER where it was left, KEY VELOCITY */
++#endif
+     master_boot();                        /* main.c (#137): the pot's level from the first block */
+     kb_boot_hold = 1;                     /* main.c (#137): the keys silent under the splash */
+     audio_init();
+@@ -344,8 +404,12 @@
+     if (b > 0)
+         song.batt_raw = song.batt_raw ? song.batt_raw + (b - song.batt_raw) / 32 : b;
+     master_poll();
++    ui_cpu = (uint8_t)(song.cpu_q8 * 100u / 256u);   /* (main.c: the MENU's load, one value a frame) */
+     felucca_dbg.ui_frames++;
+     ui_input();
++#if BOARD_SMK37
++    smk_ui_frame();
++#endif
+     settings_poll();
+     autosave_poll();
+     ui_leds();
+@@ -422,6 +486,38 @@
+     if (!web_booted)
+         web_power_on();
+ }
++/* (Skiff Studio) a unit's backup (the editor's, fm1backup.js: its objects) into this flash as the unit keeps it, so a
++ * copy boots as the unit does after the cast's restart: on an empty unit (web_nor_erase, web_boot) each object into
++ * web_obj_buf(), then web_restore_object(id, size); then this NOR (web_nor) into a fresh instance, which boots from
++ * it. The current music (id 0) is the autosave: the cast's restart stores it first. 0 = written */
++static uint8_t web_obj[96u * 1024u];
++EXPORT uint8_t *web_obj_buf(void) { return web_obj; }
++EXPORT int32_t web_restore_object(uint32_t id, uint32_t n)
++{
++    if (n > sizeof web_obj)
++        return -1;
++    if (!n || id == 8u)                            /* (empty; 8: the retired FM6 bank, always empty) */
++        return 0;
++    if (id == 0u)
++        return st_save(OBJ_AUTOSAVE, web_obj, n);
++    if (id == 1u)
++        return st_save(OBJ_SETTINGS, web_obj, n);
++    if (id >= 2u && id <= 5u)
++        return st_save(OBJ_PROJECT0 + id - 2u, web_obj, n);
++    if (id == 6u || id == 7u)
++        return st_save(OBJ_UPRESET0 + id - 6u, web_obj, n);
++    if (id == 9u) {
++        memcpy(&upf, web_obj, n < sizeof upf ? n : sizeof upf);
++        return upf_save() == 2;
++    }
++    if (id >= 16u && id < 32u)
++        return bank_restore(id - 16u, web_obj, n);
++    if (id >= 32u && id < 32u + SMP_USER_SLOTS && n <= SMP_USER_SIZE) {   /* (a slot's flash as the unit has it) */
++        memcpy(nor + SMP_USER_BASE + (id - 32u) * SMP_USER_SIZE, web_obj, n);
++        return 0;
++    }
++    return -1;
++}
+ 
+ /* input, by the printed labels: buttons bit b = B_FX .. B_OCTUP (panel.c), keys bit k = key k (F3 .. G5),
+  * encoders by role (EN_SELECT .. EN_K4), MASTER 0..1023 */

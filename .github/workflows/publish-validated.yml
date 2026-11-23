@@ -1,0 +1,30 @@
+name: Publish validated Sillage 2.2.1
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['releases/v2.2.1/manifest.json', '.github/workflows/publish-validated.yml']
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and package the exact validated firmware
+        run: python3 tools/package_validated_release.py
+      - name: Publish 2.2.1 without replacing previous releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v2.2.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v2.2.1 already exists; refusing to replace it."
+            exit 1
+          fi
+          gh release create v2.2.1 dist/release/Sillage.fwsc dist/release/Sillage-v2.2.1.zip dist/release/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Sillage 2.2.1" --notes-file RELEASE_NOTES_2.2.1.md --latest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sillage-2.2.1-published-files
+          path: dist/release/
+          retention-days: 30

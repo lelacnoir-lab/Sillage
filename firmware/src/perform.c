@@ -657,13 +657,51 @@ static inline void perf_buf(int32_t *pl, int32_t *pr)
     }
 }
 
-/* one channel of a state-variable filter (k = 1): x in Q15 >> 2 */
+/* One channel of the dry state-variable filter: summed Q15 / 4.
+ * Wide products avoid wrapping when several tracks feed the dry mix. */
 static inline int32_t pf_svf(int32_t x, int32_t *z, const int16_t *c, int hp)
 {
-    int32_t v3 = x - z[1], v1 = (c[0] * z[0] + c[1] * v3) >> 14, v2 = z[1] + ((c[1] * z[0] + c[2] * v3) >> 14);
+    int32_t v3 = x - z[1];
+    int32_t v1=(int32_t)(((int64_t)c[0]*z[0]+(int64_t)c[1]*v3)>>14);
+    int32_t v2=z[1]+(int32_t)(((int64_t)c[1]*z[0]+(int64_t)c[2]*v3)>>14);
     z[0] = 2 * v1 - z[0];
     z[1] = 2 * v2 - z[1];
     return hp ? x - v1 - v2 : v2;
+}
+
+/* FX FILTER shapes the direct mix only, after THROW's sends are captured.
+ * Bus returns enter later and are never filtered here. Wider accumulators
+ * preserve headroom when several tracks feed the dry mix at once. */
+static __attribute__((noinline)) AUDIO_RAM void perf_filter_dry(int32_t *bl,int32_t *br,uint32_t n)
+{
+    if(!((pf.act0|pf.act)&(PF_BIT(PF_LPF)|PF_BIT(PF_HPF))) && !perf_k[0] &&
+       !pf.la && !pf.ha && pf.lc==PF_TOP && !pf.hc)return;
+    uint32_t i,a=pf.act0;int32_t lt,ht;
+    for(i=0;i<n;i++){
+        int32_t l=bl[i],r=br[i];
+        if(i==pf.split)a=pf.act;
+        lt = (a & PF_BIT(PF_LPF)) || perf_k[0] < 0 || pf.lc < PF_TOP ? 32768 : 0;
+        pf.la += clamp(lt - pf.la, -SL_SLOPE, SL_SLOPE);
+        if (pf.la) {
+            int32_t fl = pf_svf(clamp(l >> 2, -262143, 262143), &pf.lz[0], pf.lk, 0) * 4;
+            int32_t fr = pf_svf(clamp(r >> 2, -262143, 262143), &pf.lz[2], pf.lk, 0) * 4;
+            l = pf_mix(l, fl, pf.la);
+            r = pf_mix(r, fr, pf.la);
+        } else {
+            pf.lz[0] = pf.lz[1] = pf.lz[2] = pf.lz[3] = 0;
+        }
+        ht = (a & PF_BIT(PF_HPF)) || perf_k[0] > 0 || pf.hc > 0 ? 32768 : 0;
+        pf.ha += clamp(ht - pf.ha, -SL_SLOPE, SL_SLOPE);
+        if (pf.ha) {
+            int32_t fl = pf_svf(clamp(l >> 2, -262143, 262143), &pf.hz[0], pf.hk, 1) * 4;
+            int32_t fr = pf_svf(clamp(r >> 2, -262143, 262143), &pf.hz[2], pf.hk, 1) * 4;
+            l = pf_mix(l, fl, pf.ha);
+            r = pf_mix(r, fr, pf.ha);
+        } else {
+            pf.hz[0] = pf.hz[1] = pf.hz[2] = pf.hz[3] = 0;
+        }
+        bl[i]=l;br[i]=r;
+    }
 }
 
 static __attribute__((noinline)) void perf_switch(uint32_t a) { perf_buf_select(perf_pick(a)); }
@@ -671,11 +709,11 @@ static __attribute__((noinline)) void perf_switch(uint32_t a) { perf_buf_select(
 /* the UI: OCT UP / DN is the buffer effect playing (KNOB 4 is its shimmer, the card says so) */
 static int perf_harm_on(void) { return (PF_HARM >> perf_pick(perf_act)) & 1u; }
 
-/* after the master level: the buffer effect, LPF, HPF, CRUSH on l / r (stereo, Q15) */
+/* After the master level: buffer effects and CRUSH. FILTER runs on dry only. */
 static __attribute__((noinline)) AUDIO_RAM void perf_block(int32_t *bl, int32_t *br, uint32_t n)
 {
     uint32_t i, a = pf.act0, sh, hold;
-    int32_t c = perf_k[1], lt, ht, ct;
+    int32_t c = perf_k[1], ct;
     if (c)
         pf.cc = c;
     ct = c ? 32768 : 0;
@@ -692,26 +730,6 @@ static __attribute__((noinline)) AUDIO_RAM void perf_block(int32_t *bl, int32_t 
         }
         if (pf.mode != BM_NONE)
             perf_buf(&l, &r);
-        lt = (a & PF_BIT(PF_LPF)) || perf_k[0] < 0 || pf.lc < PF_TOP ? 32768 : 0;
-        pf.la += clamp(lt - pf.la, -SL_SLOPE, SL_SLOPE);
-        if (pf.la) {
-            int32_t fl = pf_svf(clamp(l >> 2, -32767, 32767), &pf.lz[0], pf.lk, 0) << 2;
-            int32_t fr = pf_svf(clamp(r >> 2, -32767, 32767), &pf.lz[2], pf.lk, 0) << 2;
-            l = pf_mix(l, fl, pf.la);
-            r = pf_mix(r, fr, pf.la);
-        } else {
-            pf.lz[0] = pf.lz[1] = pf.lz[2] = pf.lz[3] = 0;
-        }
-        ht = (a & PF_BIT(PF_HPF)) || perf_k[0] > 0 || pf.hc > 0 ? 32768 : 0;
-        pf.ha += clamp(ht - pf.ha, -SL_SLOPE, SL_SLOPE);
-        if (pf.ha) {
-            int32_t fl = pf_svf(clamp(l >> 2, -32767, 32767), &pf.hz[0], pf.hk, 1) << 2;
-            int32_t fr = pf_svf(clamp(r >> 2, -32767, 32767), &pf.hz[2], pf.hk, 1) << 2;
-            l = pf_mix(l, fl, pf.ha);
-            r = pf_mix(r, fr, pf.ha);
-        } else {
-            pf.hz[0] = pf.hz[1] = pf.hz[2] = pf.hz[3] = 0;
-        }
         {   /* CRUSH: fewer bits, a held sample (KNOB 2) */
             pf.cw += clamp(ct - pf.cw, -SL_SLOPE, SL_SLOPE);
             if (pf.cw) {

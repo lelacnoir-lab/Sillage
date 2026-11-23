@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['.github/workflows/build-hub-candidate.yml']
+    paths: ['.github/workflows/build-hub-candidate.yml', 'recompiler-fm1.sh']
 permissions:
   contents: read
 jobs:

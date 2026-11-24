@@ -4,7 +4,7 @@
 
 Groovebox à huit pistes pour le M-VAVE FM-1, basée sur **Skiff et Felucca**. 448 presets classés, séquenceur 64 pas, mode SONG, mixeur live, égaliseur quatre bandes par piste et traitement master.
 
-**[Installer Sillage 2.2.1](https://lelacnoir-lab.github.io/Sillage/installer.html)** · **[Ouvrir l’éditeur web](https://lelacnoir-lab.github.io/Sillage/editor.html)** · **[Téléchargements](https://github.com/lelacnoir-lab/Sillage/releases)**
+**[▶ Try in your browser / Essayer dans le navigateur](https://lelacnoir-lab.github.io/Sillage/demo.html)** · **[Installer Sillage 2.2.1](https://lelacnoir-lab.github.io/Sillage/installer.html)** · **[Ouvrir l’éditeur web](https://lelacnoir-lab.github.io/Sillage/editor.html)** · **[Téléchargements](https://github.com/lelacnoir-lab/Sillage/releases)**
 
 ## Version 2.2.1
 

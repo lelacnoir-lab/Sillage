@@ -6,5 +6,6 @@
   "sounds": "licensed: Felucca/Skiff synthesized assets (GPL-3.0-only), VSCO-2 CE/VCSL and Virtuosity Drums (CC0 1.0). See LICENSING.md and asset credits.",
   "image": "docs/sillage-card.jpg",
   "author": "T-TAURI",
-  "editor": "https://lelacnoir-lab.github.io/Sillage/editor.html"
+  "editor": "https://lelacnoir-lab.github.io/Sillage/editor.html",
+  "play": "https://lelacnoir-lab.github.io/Sillage/demo.html"
 }

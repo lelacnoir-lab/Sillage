@@ -1618,19 +1618,19 @@ static void graph_title(void)
 }
 
 #include "ui_home.c"                                  /* Skiff: HOME's four tracks (graph_tracks, home_sig) */
-/* (2.5, #97, the user's 8C) MENU > LARGE on HOME: the strip under the tall cards names the six tracks' sounds, two
- * columns of three, the selected one a band of its colour (the themes' lanes as HOME's: CRYPT's stone, NEON's sign,
+/* MENU > LARGE on HOME: two columns, with enough rows for every track (eight: four rows).
+ * The selected one is a band of its colour (the themes' lanes as HOME's: CRYPT's stone, NEON's sign,
  * QUARK's beam); HOME tapped: the scope, as before */
 static void graph_names(void)
 {
-    uint32_t k;
-    int32_t rh = ((int32_t)graph_h() - 8) / 3;
+    uint32_t k, rows = (NTRK + 1u) / 2u;
+    int32_t rh = ((int32_t)graph_h() - 2 - 2 * (int32_t)rows) / (int32_t)rows;
     char name[20], d[2] = {0, 0};
     cv_rect(0, 0, 240, (int32_t)graph_h(), T_BG);
     for (k = 0; k < NTRK; k++) {
         const track_t *t = &trk[k];
         int sel = k == song.sel, ib = sel && !ux.quark;
-        int32_t x = 3 + (int32_t)(k / 3u) * 118, y = 2 + (int32_t)(k % 3u) * (rh + 2);
+        int32_t x = 3 + (int32_t)(k / rows) * 118, y = 2 + (int32_t)(k % rows) * (rh + 2);
         uint16_t col = t->p[P_MUTE] ? T_DIM : T_TRK(k), lane = sel ? (ux.quark ? ux_mix(col, T_BG, 80) : col) :
                                                                 ux.quark ? T_BG : T_SURF;
         if (ux.crypt && !sel)

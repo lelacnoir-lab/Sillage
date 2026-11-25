@@ -1,0 +1,49 @@
+name: Build and publish Sillage 2.2.2 HOME Large fix
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publish-home-large.yml']
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify scope and all HOME Large tracks
+        run: |
+          python3 tools/package_home_large_release.py --verify-only
+          python3 tests/home_large_layout_test.py
+      - name: Install the JieLi toolchain
+        run: |
+          bash tools/get_toolchain.sh "$RUNNER_TEMP/jieli"
+          echo "JIELI_TOOLCHAIN=$RUNNER_TEMP/jieli/toolchain" >> "$GITHUB_ENV"
+      - name: Compile and check the firmware
+        run: bash recompiler-fm1.sh
+      - name: Package the firmware and installer
+        run: python3 tools/package_home_large_release.py
+      - name: Update the public installer and download
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/installer.html downloads/Sillage.fwsc releases/v2.2.2/manifest.json
+          git commit -m 'Update installer and firmware for Sillage 2.2.2'
+          git push origin HEAD:main
+      - name: Publish Sillage 2.2.2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v2.2.2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Refusing to replace existing v2.2.2 release.'
+            exit 1
+          fi
+          gh release create v2.2.2 dist/release-2.2.2/Sillage.fwsc dist/release-2.2.2/Sillage-v2.2.2.zip dist/release-2.2.2/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --target "$(git rev-parse HEAD)" --title 'Sillage 2.2.2 — HOME Large fix' --notes-file RELEASE_NOTES_2.2.2.md --latest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sillage-2.2.2-HOME-Large
+          path: dist/release-2.2.2/
+          retention-days: 30

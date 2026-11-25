@@ -4,13 +4,17 @@
 
 Groovebox à huit pistes pour le M-VAVE FM-1, basée sur **Skiff et Felucca**. 448 presets classés, séquenceur 64 pas, mode SONG, mixeur live, égaliseur quatre bandes par piste et traitement master.
 
-**[▶ Try in your browser / Essayer dans le navigateur](https://lelacnoir-lab.github.io/Sillage/demo.html)** · **[Installer Sillage 2.2.1](https://lelacnoir-lab.github.io/Sillage/installer.html)** · **[Ouvrir l’éditeur web](https://lelacnoir-lab.github.io/Sillage/editor.html)** · **[Téléchargements](https://github.com/lelacnoir-lab/Sillage/releases)**
+**[▶ Try in your browser / Essayer dans le navigateur](https://lelacnoir-lab.github.io/Sillage/demo.html)** · **[Installer Sillage 2.2.2](https://lelacnoir-lab.github.io/Sillage/installer.html)** · **[Ouvrir l’éditeur web](https://lelacnoir-lab.github.io/Sillage/editor.html)** · **[Téléchargements](https://github.com/lelacnoir-lab/Sillage/releases)**
 
-## Version 2.2.1
+## Version 2.2.2
+
+Correction d’affichage : HOME en mode DISPLAY → LARGE montre les huit pistes en deux colonnes de quatre. Les grands réglages restent affichés. Le traitement audio, FX Hold et le filtre indépendant restent ceux de la 2.2.1. Aucun changement de format des projets ou presets. Cette correction d’affichage a été vérifiée par tests et compilation ; sa confirmation sur FM-1 reste bienvenue.
+
+## Base audio 2.2.1
 
 Cette version conserve le traitement audio de la base 2.2 validée sur FM-1 et ajoute l’appui long sur FX pour verrouiller les effets live. Le filtre agit sur le signal direct, indépendamment des retours de réverbération et de delay. Les réverbes d’origine sont conservées ; les corrections plus lourdes expérimentées ensuite ne sont pas reprises.
 
-Le firmware publié est exactement le fichier validé sur matériel, SHA-256 `8bba5cbb0e42a0a50f5d4819b482f0132a66fbbc06c04298cbca56c66a476e36`, identifiant USB `FM-1_946221`. Son menu de version peut afficher **Sillage 2.2.1 FX test** : aucun nouveau binaire n’a été recompilé pour changer ce libellé.
+Le firmware de la version 2.2.1 est exactement le fichier validé sur matériel, SHA-256 `8bba5cbb0e42a0a50f5d4819b482f0132a66fbbc06c04298cbca56c66a476e36`, identifiant USB `FM-1_946221`. Son menu de version peut afficher **Sillage 2.2.1 FX test** : aucun nouveau binaire n’a été recompilé pour changer ce libellé.
 
 ## Éditeur web
 
@@ -32,6 +36,7 @@ An eight-track FM-1 groovebox based on Skiff and Felucca. Version 2.2.1 retains 
 - [Prise en main](Prise-en-main.md)
 - [Manuel de référence](Manuel-de-reference.md)
 - [Mode d’emploi de l’éditeur](docs/editor-guide.txt)
+- [Notes de version 2.2.2](RELEASE_NOTES_2.2.2.md)
 - [Notes de version 2.2.1](RELEASE_NOTES_2.2.1.md)
 - [Licence](LICENSE) et [provenance des composants et samples](LICENSING.md)
 

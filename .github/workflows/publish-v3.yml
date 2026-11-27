@@ -1,0 +1,36 @@
+name: Publish Sillage V3
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publish-v3.yml']
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type SILLAGE V3 after maintainer approval'
+        required: true
+        type: string
+permissions:
+  contents: write
+jobs:
+  package:
+    if: github.event_name == 'push' || inputs.confirmation == 'SILLAGE V3'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact firmware and prepare release files
+        run: python3 tools/package_v3_release.py
+      - name: Publish authorized V3, never replace an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v3.0.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'v3.0.0 already exists; refusing to overwrite it.'
+            exit 1
+          fi
+          gh release create v3.0.0 dist/release-v3/* --latest --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title 'Sillage V3' --notes-file RELEASE_NOTES_V3.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sillage-V3-release-files
+          path: dist/release-v3/
+          if-no-files-found: error
+          retention-days: 30

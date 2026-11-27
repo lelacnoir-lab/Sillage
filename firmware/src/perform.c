@@ -7,7 +7,8 @@
  *   FLANGE, VINYL;  the other 2 white keys do nothing; black keys 1..6 (F#3 G#3 A#3 C#4 D#4 F#4): tracks 1..6
  *   cut while held (not P_MUTE, never saved; (2.0, D 1A) as GLO's and PERFORM's, a tap their MUTE: ui_layer.c
  *   mute_keys).
- * REPEAT and REVERSE start on the next 1/16 (at once while stopped); the others at once; all end when let go,
+ * V3: starts AND stops of the white-key FX follow K2's grid (NOW..2 BAR); stopped: immediate.
+ * Track mutes are not quantized here. Pending momentary taps can be cancelled before the grid,
  * with a 2.9 ms ramp. Effects of different kinds stack; of the buffer ones (REPEAT, REVERSE, TAPE STOP,
  * FREEZE, OCT UP, OCT DN, FLANGE, VINYL) the last pressed plays, and letting it go returns to the one held before.
  * (Skiff phase 9) GATE: the mix chopped on the 1/16s (perf_gate). DUB: the dry mix into the delay, its feedback up
@@ -22,7 +23,7 @@
  * The buffer: the SLICER's recordings (sl_buf, 32 KB) borrowed as one stereo loop of 8192 frames at 22.05 kHz
  * (371 ms). While borrowed, STUT tracks play live; their recordings are dropped afterwards. A REPEAT 1/8 or
  * REVERSE longer than the loop at the tempo (below 81 BPM) does nothing (the map shows it dimmed).
- * KNOB 1..4 with FX: the macros FILTER (the LPF / HPF), CRUSH, THROW (the dry mix into the delay and reverb
+ * KNOB 1..4 with FX: FILTER (the LPF / HPF), QUANTIZE, THROW (the dry mix into the delay and reverb
  * sends), DEPTH (the buffer effects' level; OCT UP / DN: the shimmer).
  * MENU > FX LATCH ON (#40, a hand that cannot hold FX, a key and a knob together): a key pressed with FX turns its
  * effect on, the next press turns it off (perf_latched; letting the key or FX go does nothing), the macros keep
@@ -67,6 +68,10 @@ static volatile uint32_t kb_layer;    /* ISR: the keys held that are the layer's
 static volatile uint32_t perf_held;   /* ISR: the effects held (PF_*) */
 static volatile uint8_t perf_latch_on;   /* main: MENU > FX LATCH ON (#40): a key with FX toggles its effect */
 static volatile uint32_t perf_latched;   /* ISR: the effects latched (FX LATCH; main clears it: OCT-, the menu) */
+/* Quantization is a setting, not an audio macro or a saved sound parameter. */
+static volatile uint8_t perf_quant = 2u;             /* default: quarter note / one beat */
+static const uint8_t FXQ_STEPS[6] = {0, 2, 4, 8, 16, 32};
+static const char *const FXQ_NAMES[6] = {"NOW", "1/8", "1/4", "1/2", "1 BAR", "2 BAR"};
 static volatile uint32_t perf_act;    /* ISR: .. running (a 1/16 one from its start on) */
 static uint32_t perf_ord[PF_N], perf_seq;   /* press order: the last pressed buffer effect plays */
 
@@ -89,6 +94,7 @@ static const int16_t PF_SVF[64][3] = {
 
 static struct {
     uint32_t ph, P, split;             /* samples since play; the 1/16; this block: where a 1/16 starts */
+    uint32_t end_mask, end_split, off;
     uint32_t act, act0;                /* running after / before split */
     uint8_t busy, sync, mute;          /* sync: a 1/16 starts with the next block; mute: tracks to ramp */
     /* the buffer */
@@ -154,7 +160,8 @@ static void perf_press(uint32_t e, int down)
     }
 }
 
-static void perf_start(void) { pf.ph = 0; pf.sync = 1; }      /* seq_start: a 1/16 starts with the transport */
+static uint32_t perf_transport_phase(void); /* sequencer launch clock, seq.c */
+static void perf_start(void) { pf.ph = 0; pf.sync = 3; }      /* seq_start: a 1/16 starts with the transport */
 
 /* the SLICER's recordings dropped (when the buffer is taken and given back) */
 static void perf_drop_slicer(void)
@@ -251,39 +258,64 @@ static void perf_buf_select(uint32_t e)
     pf.next = (uint8_t)e;
 }
 
+/* Fade early where possible, but never defer a requested end past its grid.
+ * A late request is forced dry at split before the boundary's first sample. */
+static __attribute__((noinline)) void perf_end_prepare(uint32_t held, uint32_t qm,
+                                                     uint32_t until, uint32_t n)
+{
+    uint32_t off = pf.act & ~held & qm;
+    uint32_t early = until > SL_RAMP ? until - SL_RAMP : 0;
+    if (off && early < n) { pf.end_mask = off; pf.end_split = early; }
+}
+
 /* each block, after the keys (seq.c) and before the parts: what runs, the 1/16, the filters, the mutes.
  * Returns 1 when a stage has something to do */
 static __attribute__((noinline)) AUDIO_RAM int perf_begin(uint32_t n)
 {
     uint32_t held = perf_kill ? 0u : (perf_held | perf_latched | (uint32_t)perf_cut << PF_M1 |
                     (perf_solo ? (~(uint32_t)perf_solo & ((1u << NTRK) - 1u)) << PF_M1 : 0u)) & AUDIO_FAR(perf_avail)();
-    uint32_t q, k, ph0, bnd;
+    uint32_t q, k, ph0, bnd, quant, qm, span = 0, until = 0;
     int32_t m;
+    pf.off = 0;
     if (!held && !pf.busy && !(perf_k[0] | perf_k[1] | perf_k[2])) {   /* idle: the clock only */
         pf.ph += n;
-        pf.sync = 0;
+        pf.sync &= 2u;
         perf_act = 0;
         return 0;
     }
     pf.P = AUDIO_FAR(beat_samples)() >> 2;            /* (Skiff: this code in RAM, those calls to XIP: AUDIO_FAR) */
-    if (pf.sync) {
+    if (pf.sync & 1u) {
         pf.ph = 0;
-        pf.sync = 0;
+        pf.sync &= 2u;
     }
+    if (song.playing && (pf.sync & 2u)) pf.ph = AUDIO_FAR(perf_transport_phase)();
     ph0 = pf.ph % pf.P;                             /* the 1/16 in this block (n: none) */
-    bnd = ph0 ? (pf.P - ph0 < n ? pf.P - ph0 : n) : 0u;
+    quant = song.playing && !perf_kill ? FXQ_STEPS[perf_quant % 6u] : 0u;
+    qm = quant ? (1u << PF_M1) - 1u : 0u;         /* effects only: track mutes stay direct */
+    if (quant) {
+        uint32_t pos;
+        span = pf.P * quant; pos = pf.ph % span;
+        until = pos ? span - pos : 0u;
+        bnd = until < n ? until : n;
+    } else bnd = 0u;
+    pf.end_mask = 0; pf.end_split = n;
+    if (qm && (pf.act & ~held & qm))
+        AUDIO_FAR(perf_end_prepare)(held, qm, until, n);
     pf.ph += n;
-    pf.gp0 = ph0;                                   /* (GATE's place) */
-    pf.act &= held;                                 /* let go: at once */
-    pf.act |= held & ~PF_Q;
+    pf.gp0 = ph0;                                   /* GATE keeps its sixteenth-note phase */
+    pf.act = (pf.act & qm) | (held & ~qm);           /* preserve effects awaiting a quantized stop */
     pf.act0 = pf.act;
-    q = held & PF_Q & ~pf.act;
+    q = (held ^ pf.act) & qm;                       /* both starts and stops wait for the grid */
     pf.split = n;
     if (q && (!song.playing || bnd < n)) {
         pf.split = song.playing ? bnd : 0u;
-        pf.act |= q;
+        uint32_t apply = qm;
+        pf.act = (pf.act & ~apply) | (held & apply);
     }
+    pf.off = pf.act0 & ~pf.act & qm;
     perf_act = pf.act;
+    /* A queued start alone needs no audio processing before its boundary. */
+    if (!pf.act && !pf.busy && !(perf_k[0] | perf_k[1] | perf_k[2])) return 0;
     pf.dfb += clamp(((pf.act >> PF_DUB) & 1u ? DUB_FB : 0) - pf.dfb, -24, 120);   /* DUB's feedback: up in 0.2 s, down
                                                                                    * in 0.9 s (the echoes ring out) */
     /* the filters: LPF from open down over a bar while its key is held, KNOB 1 left; HPF up, KNOB 1 right */
@@ -337,9 +369,12 @@ static __attribute__((noinline)) AUDIO_RAM void perf_mute(uint32_t k, int32_t *b
  * ring out after it is let go. (2.5) A stereo delay: perf_pre_st */
 static __attribute__((noinline)) AUDIO_RAM void perf_dub(const int32_t *ml, const int32_t *mr, int32_t *sd, uint32_t n)
 {
-    uint32_t i;
-    int32_t t = (pf.act >> PF_DUB) & 1u ? 32768 : 0;
+    uint32_t i, a = pf.act0;
+    if (!pf.end_split) a &= ~pf.end_mask;
     for (i = 0; i < n; i++) {
+        if (i == pf.split) { a = pf.act; if (pf.off & PF_BIT(PF_DUB)) pf.dd = 0; }
+        if (i == pf.end_split) a &= ~pf.end_mask;
+        int32_t t = (a >> PF_DUB) & 1u ? 32768 : 0;
         pf.dd += clamp(t - pf.dd, -SL_SLOPE, SL_SLOPE);
         sd[i] += mulq16((ml[i] + mr[i]) >> 1, (uint32_t)pf.dd << 1);
     }
@@ -370,12 +405,18 @@ static __attribute__((noinline)) void perf_pre_st(const int32_t *ml, const int32
             sr[i] += mulq16((ml[i] + mr[i]) >> 1, (uint32_t)pf.td << 1);
         }
     }
-    if (pf.dd || ((pf.act >> PF_DUB) & 1u))
+    if (pf.dd || ((pf.act >> PF_DUB) & 1u)) {
+        uint32_t a = pf.act0;
+        if (!pf.end_split) a &= ~pf.end_mask;
         for (i = 0; i < n; i++) {
+            if (i == pf.split) { a = pf.act; if (pf.off & PF_BIT(PF_DUB)) pf.dd = 0; }
+            if (i == pf.end_split) a &= ~pf.end_mask;
+            t = (a >> PF_DUB) & 1u ? 32768 : 0;
             pf.dd += clamp(t - pf.dd, -SL_SLOPE, SL_SLOPE);
             sd[i] += mulq16(ml[i], (uint32_t)pf.dd << 1);
             se[i] += mulq16(mr[i], (uint32_t)pf.dd << 1);
         }
+    }
 }
 
 /* before the buses: THROW (KNOB 3) adds the dry mix to the delay and reverb sends ((2.5) se: a stereo delay's right
@@ -561,9 +602,13 @@ static __attribute__((noinline)) AUDIO_RAM void perf_mdl(int32_t l, int32_t r, i
  * DEPTH (KNOB 4) how far it shuts (0: silence). After CRUSH */
 static __attribute__((noinline)) AUDIO_RAM void perf_gate(int32_t *bl, int32_t *br, uint32_t n)
 {
-    uint32_t i, p = pf.gp0, h = pf.P >> 1, on = (pf.act >> PF_GATE) & 1u;
+    uint32_t i, p = pf.gp0, h = pf.P >> 1, a = pf.act0;
     int32_t lo = perf_k[3] * 327;
+    if (!pf.end_split) a &= ~pf.end_mask;
     for (i = 0; i < n; i++) {
+        if (i == pf.split) { a = pf.act; if (pf.off & PF_BIT(PF_GATE)) pf.gg = 32768; }
+        if (i == pf.end_split) a &= ~pf.end_mask;
+        uint32_t on = (a >> PF_GATE) & 1u;
         pf.gg += clamp((on && p >= h ? lo : 32768) - pf.gg, -SL_SLOPE, SL_SLOPE);
         bl[i] = mulq16(bl[i], (uint32_t)pf.gg << 1);
         br[i] = mulq16(br[i], (uint32_t)pf.gg << 1);
@@ -677,10 +722,18 @@ static __attribute__((noinline)) AUDIO_RAM void perf_filter_dry(int32_t *bl,int3
     if(!((pf.act0|pf.act)&(PF_BIT(PF_LPF)|PF_BIT(PF_HPF))) && !perf_k[0] &&
        !pf.la && !pf.ha && pf.lc==PF_TOP && !pf.hc)return;
     uint32_t i,a=pf.act0;int32_t lt,ht;
+    if (!pf.end_split) a &= ~pf.end_mask;
     for(i=0;i<n;i++){
         int32_t l=bl[i],r=br[i];
-        if(i==pf.split)a=pf.act;
-        lt = (a & PF_BIT(PF_LPF)) || perf_k[0] < 0 || pf.lc < PF_TOP ? 32768 : 0;
+        if(i==pf.split) {
+            a=pf.act;
+            if ((pf.off & PF_BIT(PF_LPF)) && perf_k[0] >= 0) pf.la=0;
+            if ((pf.off & PF_BIT(PF_HPF)) && perf_k[0] <= 0) pf.ha=0;
+        }
+        if(i==pf.end_split)a &= ~pf.end_mask;
+        /* Key released on its grid: fade the wet share directly, rather than
+         * keeping it audible while the cutoff travels back to its endpoint. */
+        lt = (a & PF_BIT(PF_LPF)) || perf_k[0] < 0 ? 32768 : 0;
         pf.la += clamp(lt - pf.la, -SL_SLOPE, SL_SLOPE);
         if (pf.la) {
             int32_t fl = pf_svf(clamp(l >> 2, -262143, 262143), &pf.lz[0], pf.lk, 0) * 4;
@@ -690,7 +743,7 @@ static __attribute__((noinline)) AUDIO_RAM void perf_filter_dry(int32_t *bl,int3
         } else {
             pf.lz[0] = pf.lz[1] = pf.lz[2] = pf.lz[3] = 0;
         }
-        ht = (a & PF_BIT(PF_HPF)) || perf_k[0] > 0 || pf.hc > 0 ? 32768 : 0;
+        ht = (a & PF_BIT(PF_HPF)) || perf_k[0] > 0 ? 32768 : 0;
         pf.ha += clamp(ht - pf.ha, -SL_SLOPE, SL_SLOPE);
         if (pf.ha) {
             int32_t fl = pf_svf(clamp(l >> 2, -262143, 262143), &pf.hz[0], pf.hk, 1) * 4;
@@ -702,6 +755,9 @@ static __attribute__((noinline)) AUDIO_RAM void perf_filter_dry(int32_t *bl,int3
         }
         bl[i]=l;br[i]=r;
     }
+    /* Reset only once inaudible; the next filter sweep starts at neutral. */
+    if (!pf.la && perf_k[0] >= 0 && !(pf.act & PF_BIT(PF_LPF))) pf.lc = PF_TOP;
+    if (!pf.ha && perf_k[0] <= 0 && !(pf.act & PF_BIT(PF_HPF))) pf.hc = 0;
 }
 
 static __attribute__((noinline)) void perf_switch(uint32_t a) { perf_buf_select(perf_pick(a)); }
@@ -714,6 +770,7 @@ static __attribute__((noinline)) AUDIO_RAM void perf_block(int32_t *bl, int32_t 
 {
     uint32_t i, a = pf.act0, sh, hold;
     int32_t c = perf_k[1], ct;
+    if (!pf.end_split) a &= ~pf.end_mask;
     if (c)
         pf.cc = c;
     ct = c ? 32768 : 0;
@@ -726,6 +783,14 @@ static __attribute__((noinline)) AUDIO_RAM void perf_block(int32_t *bl, int32_t 
         int32_t l = bl[i], r = br[i];
         if (i == pf.split) {
             a = pf.act;
+            if ((pf.off & PF_BUF) && !(a & PF_BUF)) {
+                pf.w = pf.tw = 0; pf.src = pf.next = PF_N;
+                AUDIO_FAR(perf_buf_done)();
+            }
+            AUDIO_FAR(perf_switch)(a);
+        }
+        if (i == pf.end_split && pf.end_mask) {
+            a &= ~pf.end_mask;
             AUDIO_FAR(perf_switch)(a);
         }
         if (pf.mode != BM_NONE)

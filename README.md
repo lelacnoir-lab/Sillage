@@ -4,9 +4,21 @@
 
 Groovebox à huit pistes pour le M-VAVE FM-1, basée sur **Skiff et Felucca**. 448 presets classés, séquenceur 64 pas, mode SONG, mixeur live, égaliseur quatre bandes par piste et traitement master.
 
-**[▶ Try in your browser / Essayer dans le navigateur](https://lelacnoir-lab.github.io/Sillage/demo.html)** · **[Installer Sillage 2.2.2](https://lelacnoir-lab.github.io/Sillage/installer.html)** · **[Ouvrir l’éditeur web](https://lelacnoir-lab.github.io/Sillage/editor.html)** · **[Téléchargements](https://github.com/lelacnoir-lab/Sillage/releases)**
+**[▶ Try in your browser / Essayer dans le navigateur](https://lelacnoir-lab.github.io/Sillage/demo.html)** · **[Installer Sillage V3](https://lelacnoir-lab.github.io/Sillage/installer.html)** · **[Ouvrir l’éditeur web](https://lelacnoir-lab.github.io/Sillage/editor.html)** · **[Téléchargements](https://github.com/lelacnoir-lab/Sillage/releases)**
 
-## Version 2.2.2
+## Sillage V3
+
+**EVOLVE · SOUND DESIGN / SAVE SOUND · LIVE TRANSPOSE · QUANTIZED FX HOLD · DIRECT FILL**
+
+EVOLVE enrichit la mélodie dans la gamme sans modifier les notes d'origine ; K3 choisit l'octave des prochains ajouts (-1/0/+1) et K4 leur durée. Le parcours PRESET INIT se termine par SAVE SOUND avec emplacement et nom. ENV maintenu ouvre la transposition au clavier, avec choix de pistes et grille. Dans FX HOLD, K2 quantifie début et fin des effets jusqu'à deux mesures, et E5 appelle directement le Fill pendant l'appui. Le redessin EVOLVE sans voile noir est inclus.
+
+8 pistes, 64 pas par piste et 448 presets restent la base. EVOLVE et la transposition ne sont pas sauvegardés dans les projets. Les conditions Fill restent par pas entier. Les réverbes de la base 2.2 sont conservées.
+
+Public name: **Sillage V3**. The unchanged firmware still reports **Sillage V3 beta 1**, identity `FM-1_946301`. The browser demo is not a hardware CPU benchmark. See [V3 release notes](RELEASE_NOTES_V3.md), [full manual](Manuel-de-reference.md), [English quick-start PDF](docs/Sillage-V3-Quick-Start-EN.pdf) and [build instructions](BUILDING.md).
+
+New in V3: scale-aware non-destructive EVOLVE, an engine-based Sound Design workflow ending in SAVE SOUND, keyboard live transposition, quantized live FX start/stop, direct momentary Fill in FX HOLD and the EVOLVE redraw fix. The editor retains grouped controls, sound families and A/B comparison. Based on Skiff and Felucca.
+
+## Previous version 2.2.2
 
 Correction d’affichage : HOME en mode DISPLAY → LARGE montre les huit pistes en deux colonnes de quatre. Les grands réglages restent affichés. Le traitement audio, FX Hold et le filtre indépendant restent ceux de la 2.2.1. Aucun changement de format des projets ou presets. Cette correction d’affichage a été vérifiée par tests et compilation ; sa confirmation sur FM-1 reste bienvenue.
 

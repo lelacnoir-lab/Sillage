@@ -1,44 +1,29 @@
 name: Build Sillage FM-1 candidate
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/build-hub-candidate.yml', 'recompiler-fm1.sh']
 permissions:
   contents: read
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install the JieLi toolchain
         run: |
           bash tools/get_toolchain.sh "$RUNNER_TEMP/jieli"
           echo "JIELI_TOOLCHAIN=$RUNNER_TEMP/jieli/toolchain" >> "$GITHUB_ENV"
-      - name: Build and check the FM-1 candidate
+      - name: Fetch the matching external SDK
+        run: |
+          git clone --depth 1 --branch AC79NN_SDK_V1.2.1_2023-12-13 https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK.git "$RUNNER_TEMP/ac79-sdk"
+          echo "AC79_SDK=$RUNNER_TEMP/ac79-sdk" >> "$GITHUB_ENV"
+      - name: Build and verify V3 candidate
         run: |
           bash recompiler-fm1.sh
-          mkdir -p build/hub-candidate
-          cp build/felucca.fwsc build/hub-candidate/Sillage-2.2.2-hub-test.fwsc
-          python3 - <<'PY'
-          from pathlib import Path
-          data = Path("build/hub-candidate/Sillage-2.2.2-hub-test.fwsc").read_bytes()
-          identity = "".join(
-              chr((marker - i - 1) & 0xFF)
-              for i in range(20)
-              if (marker := data[i * 0x30 + 0x2F]) != 0x7D
-          )
-          assert identity == "FM-1_946222", identity
-          assert b"FELUCCA-LOADER-1" in data, "Update loader marker missing"
-          print(f"Package identity verified: {identity}")
-          PY
-          cd build/hub-candidate
-          sha256sum Sillage-2.2.2-hub-test.fwsc > SHA256SUMS.txt
-          cat SHA256SUMS.txt >> "$GITHUB_STEP_SUMMARY"
+          python3 tools/package_v3_release.py --check-build build/felucca.fwsc
       - uses: actions/upload-artifact@v4
         with:
-          name: Sillage-2.2.2-hub-test
-          path: build/hub-candidate/
+          name: Sillage-V3-build-candidate-not-published
+          path: build/felucca.fwsc
           if-no-files-found: error
           retention-days: 30

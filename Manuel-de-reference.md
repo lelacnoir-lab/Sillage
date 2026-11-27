@@ -1,4 +1,4 @@
-# Sillage 2.2 beta — Manuel de référence
+# Sillage V3 — Manuel de référence
 
 
 ### Commandes de façade
@@ -23,7 +23,7 @@ Les familles couvrent les basses, leads, nappes, claviers, plucks, batteries et 
 
 - **EDIT 1 / EDIT 2** donnent accès aux réglages propres au moteur. Selon le son, tu peux aussi trouver des pages d’opérateurs FM, de lanes de batterie ou de découpes de samples.
 - **VOICE** règle le mode de jeu, le glide et la priorité. **VOICE 2** propose ALLOC (rotation ou réutilisation des voix), DETUNE (désaccord en unison) et SPREAD (largeur stéréo).
-- **PRESET INIT** se trouve à la fin d’EDIT. Choisis le moteur sur K1, puis appuie sur EDIT pour ouvrir les pages du son initialisé. Enregistre-le ensuite dans SAVE → USER.
+- **PRESET INIT** se trouve à la fin d’EDIT. Choisis le moteur sur K1, puis appuie sur EDIT pour ouvrir les pages du son initialisé. Le parcours de création se termine désormais par SAVE SOUND : OCT+ ouvre le choix de l’emplacement utilisateur et du nom. Voir le chapitre Sound Design V3 ci-dessous.
 - **ENV 1** règle l’évolution du niveau de la note. Attack fixe le temps de montée, Decay la descente vers le niveau Sustain, et Release l’extinction après la fin de la note.
 - **ENV 2** fournit une seconde courbe indépendante. Pour ouvrir le filtre rapidement sur une nappe à attaque lente, va dans **LFO → MOD**, choisis un routage avec K1, **ENV 2** comme source, **CUTOFF** comme destination, puis règle la quantité.
 - **LFO / LFO 2** règlent la vitesse, la forme, la phase, le fondu et les options de synchronisation ou de déclenchement. **MOD** relie une source de modulation à un paramètre.
@@ -36,6 +36,7 @@ Les familles couvrent les basses, leads, nappes, claviers, plucks, batteries et 
 | **NOTES** | Piste mélodique (hauteur, position, durée, vélocité) ou grille de batterie (lane, frappe, accent, vélocité). PRESETS déplace la sélection dans la grille mélodique. |
 | **BAR** | Édite une mesure de la piste sélectionnée. Voir les commandes ci-dessous. |
 | **FEEL** | Règle le comportement des pas, dont la probabilité et les répétitions ou flams selon la grille et le type de piste. |
+| **EVOLVE** | Ajoute des notes mélodiques temporaires dans la gamme. K1 quantité, K3 octave -1/0/+1, K4 durée. OCT− reset piste, OCT+ reset toutes les pistes. |
 | **PATTERN** | K1 longueur (jusqu’à 64 pas), K2 division, K3 swing, K4 gate. PRESETS règle le sens de lecture. |
 | **GROOVE** | K1 Humanize, K2 Accent, K3 Timing, K4 Velocity. Les réglages sont propres à la piste. |
 | **GROOVE 2** | K1 ajoute des variations de decay. |
@@ -122,3 +123,84 @@ Pour importer un kick, ouvre l’éditeur Sillage dans Chrome ou Edge, relie le 
 | **Parameter lock** | Valeur d’un paramètre imposée sur un pas précis. |
 | **Mute / Solo / Duck** | Couper une piste, l’isoler, ou baisser son niveau au déclenchement d’une autre piste. |
 | **USR** | Emplacement de samples utilisateur. |
+
+
+## Nouveautés V3 — Utilisation détaillée
+
+### Sound Design : créer, éditer puis sauver un son
+
+Pour modifier un preset déjà chargé, appuie sur EDIT normalement : le choix du moteur n'est pas imposé. Pour partir d'un son initialisé, parcours EDIT jusqu'à PRESET INIT. K1 choisit le moteur ; appuie ensuite sur EDIT pour valider et démarrer le parcours de création.
+
+Les pages de ce parcours ont un fond bleu plus marqué. SELECT et les appuis successifs sur EDIT font défiler les pages propres au moteur. Les quatre knobs commandent les paramètres affichés. Une étoile indique que le son a été modifié. Le changement d'une note de séquence ou du mixage n'est pas à lui seul une modification du preset.
+
+SAVE SOUND se trouve **à la fin du parcours de création**, après les pages du moteur. Appuie sur OCT+ pour ouvrir SAVE → USER. À l'arrêt, K1 choisit l'emplacement ; utilise l'action SAVE et OCT+ pour accéder au nom et confirmer. Confirme explicitement le remplacement d'un emplacement occupé. SAVE SOUND enregistre le son, pas le morceau : SAVE → PROJECT reste nécessaire pour conserver le projet.
+
+Quitter EDIT avec une autre touche restaure la couleur normale. Revenir dans EDIT peut reprendre le parcours ; changer de piste ou de moteur peut le réinitialiser.
+
+### EVOLVE : enrichir une phrase sans détruire l'original
+
+Ouvre SEQ et tourne SELECT jusqu'à EVOLVE, après FEEL. ALGORITHM choisit une piste parmi les huit. Les moteurs de batterie et ceux dont le clavier déclenche des sons mappés ne sont pas traités. Une phrase vide ne génère pas de mélodie.
+
+| Commande | Action |
+| --- | --- |
+| K1 | Quantité de notes ajoutées, 0–100. Les ajouts occupent des pas libres et suivent la gamme sélectionnée. |
+| K2 | Non utilisé dans cette V3. |
+| K3 | Octave des prochains ajouts : -1, 0 ou +1. |
+| K4 | Durée des ajouts, de 5 à 100 % d'un pas ; valeur initiale 50 %. |
+| OCT− | RESET TRACK : retirer les ajouts de la piste sélectionnée. |
+| OCT+ | RESET ALL : retirer les ajouts des huit pistes. |
+
+Exemple : monte K1 à octave 0 pour ajouter quelques notes. Passe K3 à +1 et monte encore K1 : les premiers ajouts restent en octave 0 et les suivants sont plus hauts. Descendre K1 retire les derniers ajouts ; les recréer utilise l'octave désormais sélectionnée. K4 règle les notes ajoutées, jamais la durée des notes originales.
+
+Pendant la lecture, WAIT indique une modification en attente du prochain début de boucle de la piste. La génération est stable pour une même phrase et ses réglages : elle ne recrée pas un hasard complet à chaque tour.
+
+**EVOLVE est une surcouche temporaire de lecture.** Les notes originales et la banque de patterns ne sont pas réécrites. Sauver le projet ne fige pas les ajouts. Charger/créer un projet ou redémarrer réinitialise cette surcouche. RESET ne réinitialise pas le mixage ni les effets. La V3 corrige le voile noir/clignotement qui précédait le redessin de cette page.
+
+### Transposition en direct
+
+Maintiens ENV environ une demi-seconde pour ouvrir TRANSPOSE et libérer tes mains. Un appui bref sur ENV ou HOME ferme la page. K1 ou ALGORITHM sélectionne une piste ; K2 décide si elle appartient au groupe transposé. K3 choisit NOW, 1/8, 1/4, 1/2 ou BAR. Les moteurs DRUM et DRUM-X sont automatiquement exclus.
+
+Le clavier demande un décalage en demi-tons **par rapport à F4**, qui représente zéro. Ce n'est pas le choix d'une tonique absolue. La touche demandée clignote jusqu'à l'application quantifiée, puis reste allumée. Appuie sur F4 pour retrouver la hauteur d'origine. Quitter la page ne remet pas automatiquement à zéro ; STOP annule une demande encore en attente. La transposition n'est pas sauvegardée dans le projet.
+
+### FX HOLD quantifiés et retour sur le temps
+
+Maintiens FX pour verrouiller la page live ouverte. Un appui bref sur FX permet d'en sortir. Les effets se déclenchent avec les touches étiquetées à l'écran.
+
+| Knob | Fonction |
+| --- | --- |
+| K1 FILTER | Filtre passe-bas/passe-haut sur le signal direct ; les retours de réverb/delay restent indépendants. |
+| K2 QUANTIZE | NOW, 1/8, 1/4, 1/2, 1 BAR, 2 BAR ; remplace le réglage CRUSH de cette page live. |
+| K3 THROW | Réglage Throw. |
+| K4 DEPTH | Profondeur de l'effet ; le libellé peut s'adapter à l'effet. |
+
+La grille régit le démarrage et l'arrêt des effets live concernés. Pour un retour au début de la mesure, choisis 1 BAR et demande l'arrêt avant la frontière souhaitée. Le retour ne conserve pas une pente d'effet qui masquerait le premier kick. Les effets de piste et les queues des bus globaux restent indépendants : arrêter un effet live ne coupe pas toute la réverb du morceau. Les commandes de mute et FILL ne deviennent pas des effets quantifiés.
+
+### FILL : préparation et accès direct
+
+Dans SEQ → FEEL, choisis un pas avec PRESETS puis tourne K1 CHANCE au-delà de 100 % : FILL ne joue que pendant le Fill et !FILL joue hors Fill. Les conditions 1:2, 2:2 et 1:4 à 4:4 sont également conservées.
+
+Dans FX HOLD, maintiens la dernière touche E, **E5 marquée FILL**, pour activer le Fill, puis relâche-la. Elle remplace l'ancien effet VINYL, reste momentannée même dans une page verrouillée et n'attend pas la grille des effets. L'accès existant via F5 dans le mixeur live GLO reste disponible.
+
+**Une condition est portée par un pas entier.** Si kick, charley et caisse claire partagent ce pas, ils partagent sa condition. Aucun Fill par instrument indépendant ni piste Fill supplémentaire n'est ajouté. Il n'y a pas de restriction de l'accès FILL aux seules pistes de batterie.
+
+## Contrôleurs MIDI et import FM6
+
+Le menu MIDI conserve les canaux T1 à T8, AUTO CHANNEL, MIDI IN, NOTES OUT, CC OUT, THRU, REMOTE et MIDI LEARN. Respecte le routage MIDI IN choisi pour viser la piste voulue.
+
+| CC standard | Paramètre |
+| --- | --- |
+| 5 / 7 / 10 | Glide / volume / panoramique |
+| 71 / 74 | Résonance / filtre ou brillance, selon les capacités du moteur |
+| 72 / 73 / 75 | Release / attack / decay |
+| 91 / 93 / 94 | Réverb / chorus / delay |
+| 1 / 64 | Molette de modulation / sustain |
+
+Pour MIDI LEARN : MENU → MIDI → MIDI LEARN, OCT+ ; tourne le knob du paramètre sur le FM-1, puis le contrôle MIDI externe. Répète et termine avec OCT+. Dix affectations personnalisées sont disponibles. Un CC appris vise un paramètre d'une piste précise et supplante son affectation standard. OCT− efface l'affectation du paramètre choisi ; LEARN CLEAR efface l'ensemble. Les réglages d'apprentissage sont conservés dans les paramètres. Cela ne signifie pas que tous les paramètres ont simultanément un CC standard. Le pitch bend reçu pour jouer n'est pas enregistré comme automation de molette dans cette V3.
+
+Dans l'éditeur web, FM6 → Import SysEx ouvre un fichier DX7 .syx mono-son ou une banque de 32 sons. Sélectionne un son, envoie-le à une piste puis sauvegarde-le en preset utilisateur pour le conserver. La banque importée est parcourue dans l'éditeur ; il n'existe pas de banque DX7 complète réservée dans le firmware. Le transfert et la conservation après redémarrage doivent être confirmés sur le matériel utilisé.
+
+## Version et limites
+
+Nom public : **Sillage V3**. Le firmware distribué à l'identique affiche encore **Sillage V3 beta 1**, identité USB **FM-1_946301**. Les huit pistes restent limitées à 64 pas chacune. 128 pas, Bluetooth MIDI, enregistrement du pitch bend, signatures rythmiques indépendantes et Fill par instrument ne sont pas des nouveautés livrées.
+
+Le traitement de réverb de la base 2.2 est conservé. Une compilation réussie et une démonstration web ne certifient pas la charge CPU ni la stabilité du FM-1. La zone RAM principale ne garde que 388 octets libres dans cette compilation. Sauvegarde projets, presets et samples avant installation ; les versions précédentes restent accessibles sur GitHub.

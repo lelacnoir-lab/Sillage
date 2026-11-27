@@ -308,6 +308,8 @@ static struct {
     uint8_t page;                /* index into PAGES */
     uint8_t fam_last[FAM_COUNT]; /* last page used per family */
     uint8_t init_engine;         /* 0: no choice yet, otherwise engine + 1 */
+    uint8_t sound_dirty;         /* selected track's sound differs from its factory/user preset; UI only */
+    uint8_t design_track, design_engine, design_color; /* transient journey, engine, EDIT-only colour */
     uint8_t preset_lists[NTRK]; /* Sillage: 0 = Skiff's default, otherwise the track's list + 1 */
     uint8_t bank;                /* SEQ: 16-step bank (follows the cursor) */
     uint8_t cursor;              /* SEQ: step being edited (STEP page KNOB 1 moves it) */
@@ -586,6 +588,10 @@ static uint32_t graph_y(void) { return large_kind() == LK_TALL ? LG_Y_GRAPH : Y_
 static int track_context(void)
 {
     uint32_t fam = cur_page()->fam;
+    if (ui.design_track == song.sel + 1u && !ui.home && !ui.shift && !ui.layer &&
+        (fam == FAM_EDIT || fam == FAM_ENV || fam == FAM_LFO || fam == FAM_FX ||
+         (fam == FAM_SAVE && cur_page()->graph == GR_USER)))
+        return 1;
     return ux.skiff && !ui.home && !ui.shift && !ui.layer &&
            (fam == FAM_FX || fam == FAM_ENV || fam == FAM_EDIT || fam == FAM_SEQ);
 }
@@ -671,11 +677,20 @@ static uint32_t smx_zone(uint32_t *k)
 }
 static int smx_page_on(void) { return !ui.home && cur_page()->graph == GR_SMIX; }   /* (slice_store.c: saved once left) */
 
+static int sound_design_active(void)
+{
+    return ui.design_track == song.sel + 1u && ui.design_engine == TSEL->eng_req && !ui.home;
+}
+
 static int page_visible(uint32_t i)
 {
     const engine_t *e = ENGINES[TSEL->eng_req % NENGINES];
     const sheet_t *sh = sheet_of(PAGES[i].graph);
     uint32_t id = PAGES[i].id[0];
+    if (PAGES[i].graph == GR_USER && PAGES[i].fam == FAM_EDIT)
+        return sound_design_active();
+    if (PAGES[i].graph == GR_PRESET_INIT && sound_design_active())
+        return 0; /* finish at SAVE SOUND instead of entering the engine picker again */
     if (PAGES[i].fam == FAM_SEQ && id == P_GROOVE_DECAY)
         return drum_track(TSEL);
     if (PAGES[i].fam == FAM_ENV && PAGES[i].graph == GR_FMOP && !ux.skiff)
@@ -1403,6 +1418,7 @@ static const char *page_head(void)
 
 static void go_home(void)
 {
+    ui.design_track = 0;
     ui.home = 1;
     ui.plk_src = 0;                              /* (parameter locks: HOME's four) */
     ui.entry_open = 0;
@@ -2575,7 +2591,7 @@ static uint32_t act_cols(void)                   /* the columns that are actions
     if (pg->graph == GR_BAR) return 16u;
     if (pg->graph == GR_SONG) return 16u;       /* (Skiff phase 5) SONG: so too; OCT+ plays or sets (song_oct) */
     if (pg->graph == GR_USER)
-        return 14u;                              /* LOAD ERASE (or NAME, ui.act2) SAVE */
+        return pg->fam == FAM_EDIT ? 8u : 14u;    /* EDIT > SAVE SOUND: SAVE only; SAVE > USER unchanged */
     if (pg->graph == GR_SLOTS)
         return 14u;                              /* ((Skiff U2) NAME, was EDIT; (1.2.1) DELETE or NAME) LOAD (or NEW) SAVE */
     if (pg->graph == GR_BANK)
@@ -2627,7 +2643,7 @@ static const char *act_name(uint32_t c)          /* column c's action (the foote
     if (cur_page()->graph == GR_EVENTS) return ui.ev_top ? "CLEAR" : ev_act_name();
     if (cur_page()->graph == GR_SONG) return song_act_name();
     if (cur_page()->graph == GR_USER)
-        return c == 2u && ui.act2 ? "NAME" : UP_GO[(c + 2u) % 3u];
+        return cur_page()->fam == FAM_EDIT ? "OPEN" : c == 2u && ui.act2 ? "NAME" : UP_GO[(c + 2u) % 3u];
     if (cur_page()->graph == GR_SLOTS && c == 1u)
         return ui.act == 2u && ui.act2 ? "NAME" : "DELETE";   /* ((1.2.1, #6) DELETE, one step further NAME) */
     if (cur_page()->graph == GR_SLOTS && id == G_LOAD) {   /* ((2.5, 3A) KNOB 3: LOAD, NEW ((1.2.1, #6) an empty */
@@ -2656,7 +2672,7 @@ static int act_ready(void)
                song_pick() == SPICK_SOUND ? snd_of(s, sb) :   /* ((#30) a sound as it was loaded) */
                song_pick() == SPICK_CLEAR ? ent_on(s, sg.entry) : song_pick() || ent_on(s, sg.entry);
     if (cur_page()->graph == GR_USER)
-        return c == 3u ? !song.playing : up_used(ui.uslot) && (c == 1u || !song.playing);
+        return cur_page()->fam == FAM_EDIT ? 1 : c == 3u ? !song.playing : up_used(ui.uslot) && (c == 1u || !song.playing);
     if (cur_page()->graph == GR_SLOTS && c == 1u)       /* ((Skiff U2) NAME; (1.2.1) DELETE) */
         return project_used((uint32_t)song.g[G_SLOT] - 1u) && !transport_busy();
     if (cur_page()->graph == GR_BANK)                   /* (Skiff phase 5) a pattern nothing uses, stopped */

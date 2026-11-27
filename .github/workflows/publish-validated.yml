@@ -1,9 +1,6 @@
 name: Publish validated Sillage 2.2.1
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: ['releases/v2.2.1/manifest.json', '.github/workflows/publish-validated.yml']
 permissions:
   contents: write
 jobs:

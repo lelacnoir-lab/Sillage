@@ -1516,6 +1516,7 @@ static int project_restore_runtime(const project_t *input)
     panic_req = (1u << NTRK) - 1u;
     fm1_irq_off();                                      /* the audio ISR must not see half a project */
     seq_stop();
+    evolve_clear(); /* transient EVOLVE never carries into a loaded/new project */
     launch_drop();                                      /* (Skiff) the bank's staged patterns: not over it (launch.c) */
     transport_req = 0;
 #if FELUCCA_LEGACY
@@ -1914,6 +1915,7 @@ static void project_new(void)
     panic_req = (1u << NTRK) - 1u;
     fm1_irq_off();
     seq_stop();
+    evolve_clear(); /* transient EVOLVE never carries into a loaded/new project */
     launch_drop();
     transport_req = 0;
     memset(&motion, 0, sizeof motion);

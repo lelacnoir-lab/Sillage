@@ -410,6 +410,7 @@ static int up_store(uint32_t k, const char *name)
                 if (trk[i].user == k + 1u)
                     trk[i].user = 0;
             TSEL->user = (uint8_t)(k + 1u);
+            ui.design_track = 0; /* creation completed through either save entry point */
             autosave_soon();
         }
         return rc;

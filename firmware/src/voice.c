@@ -891,6 +891,8 @@ static uint32_t track_render_sends(track_t *t, int32_t *out, uint32_t n, int32_t
         /* ~6 ms smoothing, with an exact landing (no permanent small offset). */
         midi_bend_q8[ti] += d > 0 ? (d < 4 ? d : (d + 3) / 4) : (d > -4 ? d : (d - 3) / 4);
     }
+    if (((live_transpose.mask >> ti) & 1u) && !drum_engine(eng_idx(t->eng_req)))
+        tune += live_transpose.active * 16;
     bend = midi_bend_q8[ti];
     bend16 = bend >> 4;                                 /* (floor(bend / 16), as it was written with a divide: ((1.3) a
                                                          * shift, no slow path for the ISR budget's static count) */

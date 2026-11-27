@@ -70,11 +70,13 @@ static void fm1_wdt_feed(void) { if (host_wdt_hook) host_wdt_hook(); }
 static void fm1_irq_off(void) {}
 static void fm1_irq_on(void) {}
 static uint16_t host_screen[240 * 240];
+static uint32_t host_fullscreen_fills; /* Observe transient full-screen blanks on LCD. */
 static void count_wide_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h);   /* (#15: test_mixer_no_flash) */
 #define UI_FILL_HOOK count_wide_fill
 static void lcd_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint16_t c)
 {
     uint32_t i, j;
+    if (!x && !y && w == 240u && h == 240u) host_fullscreen_fills++;
 #ifdef UI_FILL_HOOK
     UI_FILL_HOOK(x, y, w, h);                     /* (tests/ui_render.c: what a fill covers is gone) */
 #endif

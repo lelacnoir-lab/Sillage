@@ -2862,7 +2862,16 @@ static void draw_graph(void)
     } else {
         switch (pg->graph) {
         case GR_PRESET_INIT:
-            panel_note("PRESET INIT", ui.init_engine ? "EDIT TO CONFIRM" : "[K1] SELECT ENGINE", 0);
+            /* Wave plus three faders: sound sculpting, using existing icon data. */
+            cv_icon_on(100, 5, 16, ICON_WAVE, T_ACCENT, T_SURF);
+            for (uint32_t i = 0; i < 3u; i++) {
+                int32_t x = 125 + (int32_t)i * 6, y = i == 1u ? 17 : i == 2u ? 8 : 11;
+                cv_rect(x, 6, 1, 18, T_ACCENT);
+                cv_rect(x - 2, y, 5, 3, T_ACCENT);
+            }
+            cv_text_in(0, 34, 240, &AF_M, "SOUND DESIGN", T_TEXT, T_SURF);
+            note_line(66, "K1: SELECT ENGINE", T_MID);
+            note_line(88, "THEN PRESS EDIT", T_TEXT);
             break;
         case GR_ADSR:
             cv_oy = GOY;
@@ -2938,7 +2947,10 @@ static void draw_graph(void)
             break;
         case GR_USER:
             cv_oy = pad;
-            graph_user();
+            if (pg->fam == FAM_EDIT)
+                panel_note("SAVE SOUND", "OCT+: USER PRESETS", 0);
+            else
+                graph_user();
             break;
         case GR_BANK:                                /* (Skiff phase 5) the pool view, from the panel's top (the mockup's) */
             cv_oy = 0;

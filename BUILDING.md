@@ -1,18 +1,28 @@
-# Building Sillage
+# Building Sillage V3
 
-For the current Sillage 2.2 beta on Linux x86-64, set JIELI_TOOLCHAIN and use the project script from the repository root.
+## Current FM-1 build
 
-    bash recompiler-fm1.sh
+Public name: Sillage V3. Internal binary label: Sillage V3 beta 1. USB identity: FM-1_946301.
+The published candidate is the existing compiled firmware; packaging verifies it rather than silently rebuilding it.
 
-The release and SMK-37 notes below describe the build tools inherited from the upstream fork. Sillage 2.2 beta targets the FM-1.
+On Linux x86-64 install Python 3, Pillow and fontTools, the external JieLi pi32v2 toolchain, and the AC79 SDK described below. Set `JIELI_TOOLCHAIN` and optionally `AC79_SDK` (default `sdk`), then run from the repository root:
 
-The build makes three files in `build/`:
+```sh
+bash recompiler-fm1.sh
+python3 tools/package_v3_release.py
+```
 
-| File | What |
-| --- | --- |
-| `felucca.bin` | the firmware app |
-| `loader/ota.bin` | the update loader |
-| `felucca.fwsc` | the installable package (app + loader) |
+The first command builds `build/felucca.fwsc` using the exact V3 headers in `generated/`, `SILLAGE_SAMPLE_RATE=13230`, `FELUCCA_CDC=0`, board fm1 and identity FM-1_946301. It runs the build tool's existing memory/code checks. Do not use the upstream `--release 3.0` switch: it changes the identity/version convention. Do not use stale 2.2 headers.
+
+The second command validates and packages the existing approved candidate in `downloads/Sillage.fwsc`, not the new rebuild. A rebuilt file must be checked and tested before replacing that candidate or updating its manifest. Reproducibility depends on matching toolchain and SDK; a successful rebuild is not a hardware audio certification.
+
+`releases/v3.0.0/manifest.json` pins the firmware, matching native firmware sources, generated headers, installer and demo. `dist/release-v3/` contains firmware, share ZIP, source ZIP and checksums. The source archive includes the matching generated headers, licences and build instructions but excludes SDK/toolchain, local settings, test reports and credentials.
+
+The V3 publication workflow publishes on main when its workflow file changes, or manually with the confirmation SILLAGE V3. This trigger was enabled for the maintainer-authorized V3 release. It refuses to replace an existing release. See MISE-EN-LIGNE-GITHUB.md. Hardware target for this release: FM-1 only.
+
+## Upstream build reference (not the V3 release command)
+
+The remaining sections describe inherited tooling and other boards. Their release examples and default options do not replace the V3 instructions above.
 
 ## Prerequisites (macOS)
 

@@ -598,6 +598,13 @@ static void sound_name(const track_t *t, char *b)
         b[n] = 0;
     } else if (e->npresets)
         str_cpy(b, e->presets[t->preset % e->npresets].name, 16);
+    if (t == TSEL && ui.sound_dirty) {             /* prefix stays visible even when a long name is ellipsised */
+        uint32_t n = str_len(b);
+        if (n > 14u) n = 14u;
+        for (uint32_t i = n; i; i--) b[i] = b[i - 1u];
+        b[0] = '*';
+        b[n + 1u] = 0;
+    }
 }
 
 /* (Skiff) BLOCKS: where the footer's hints end, the page's title (and its icon) right of them on the one line */
@@ -649,7 +656,10 @@ static void draw_foot(void)
     }
     sound_name(t, pn);
     if (track_line) {
-        if (pg->graph == GR_FXDLY || pg->graph == GR_FXREV)
+        if (sound_design_active()) {
+            str_cpy(context, "SOUND DESIGN ", sizeof context);
+            str_cpy(context + 13, e->name, sizeof context - 13u);
+        } else if (pg->graph == GR_FXDLY || pg->graph == GR_FXREV)
             str_cpy(context, "K2-4 BUS COMMUN", sizeof context);
         else if (pg->graph == GR_ROLL || pg->graph == GR_FEEL) {
             uint32_t pages, offset = step_off(&pages, 16);
@@ -1073,6 +1083,13 @@ static void draw_columns(void)
         int used = up_used(ui.uslot);
         up_slot_label(val, ui.uslot);
         draw_column(0, "SLOT", val, "", VR_LIVE, (int32_t)ui.uslot * 1000 / (int32_t)(UP_SLOTS - 1u), ICON_AUTO);
+        if (cur_page()->fam == FAM_EDIT) {
+            draw_column(0, "", "", "", VR_DIM, -1, ICON_NONE);
+            draw_column(1, "", "", "", VR_DIM, -1, ICON_NONE);
+            draw_column(2, "", "", "", VR_DIM, -1, ICON_NONE);
+            draw_act_column(3, "OPEN", VR_THEME, ICON_AUTO);
+            return;
+        }
         draw_act_column(1, "LOAD", used ? VR_THEME : VR_DIM, ICON_AUTO);
         draw_act_column(2, ui.act == 3u && ui.act2 ? "NAME" : "ERASE", used ? VR_THEME : VR_DIM, ICON_AUTO);   /* ((Skiff U2)
                                                        * one step further: NAME) */
@@ -1547,9 +1564,58 @@ static void draw_confirm(void) { draw_confirm_blocks(); }   /* (U2: BLOCKS' dial
 
 
 static void ui_draw_page(uint32_t counting);
+/* Visual overlay only: the stored theme and the audio processing stay intact. */
+static uint8_t design_tinted;
+static uint32_t design_palette_gen;
+static void sound_design_palette(void)
+{
+    uint32_t fam = cur_page()->fam;
+    if (ui.design_track && (!sound_design_active() ||
+        !(fam == FAM_EDIT || fam == FAM_ENV || fam == FAM_LFO || fam == FAM_FX ||
+          (fam == FAM_SAVE && cur_page()->graph == GR_USER))))
+        ui.design_track = 0;
+    /* The creation journey is retained, but only EDIT has the blue identity.
+     * FX/ENV/LFO/SAVE immediately restore the user's normal palette. */
+    if (!ui.design_track || !ui.design_color || fam != FAM_EDIT) {
+        if (design_tinted) {
+            theme_apply();
+            design_tinted = 0;
+            ui.force = 1;
+        }
+        return;
+    }
+    if (design_tinted && design_palette_gen == ux.gen)
+        return;
+    theme_apply();
+    ux.bg = 0x11EFu; /* #103C78, saturated deep blue, in RGB565 */
+    ux.text = UI_PALETTES[UI_SKIFF_INDEX].text;
+    ux.theme = UI_PALETTES[UI_SKIFF_INDEX].theme;
+    ux.accent = UI_PALETTES[UI_SKIFF_INDEX].accent;
+    ux.rec = UI_REC_DARK;
+    ux.surf = ux_mix(ux.bg, ux.text, 6);
+    ux.mid = ux_mix(ux.bg, ux.text, 75);
+    ux.dim = ux_mix(ux.bg, ux.text, 60);
+    ux.line = ux_mix(ux.bg, ux.text, UI_LINE_PCT);
+    ux.sel = ux_mix(ux.bg, ux.theme, UI_SEL_PCT);
+    ux.tint = ux_mix(ux.bg, ux.theme, UI_TINT_PCT);
+    ux.ink = ux.bg;
+    ux.raise = ux_mix(ux.surf, ux.text, UI_RAISE_PCT);
+    ux.key = ux_mix(ux.bg, ux.text, UI_KEY_PCT);
+    ux.lane = ux_mix(ux.surf, ux.theme, 10);
+    ux.grid = ux_mix(ux.surf, ux.text, 6);
+    ux.light = 0;
+    ux.gen++;
+    design_palette_gen = ux.gen;
+    design_tinted = 1;
+    ui.force = 1;
+}
+#include "transpose_draw.c"
+#include "evolve_draw.c"
+
 static void ui_draw(void)
 {
     static uint8_t counting;
+    sound_design_palette();
     ui.frame++;
     if (ui.take_t)                                      /* (Skiff: the TAKE box, ui_take.c) */
         ui.take_t--;
@@ -1563,11 +1629,22 @@ static void ui_draw(void)
     }
     if (!scr_frame())                                   /* MENU > SCREEN OFF: dark (or waking), nothing drawn */
         return;
-    ui_draw_page(counting);
+    if (live_transpose.open) transpose_draw();
+    else if (!ui.home && !ui.menu && !ui.confirm && !ui.layer && !name_on() && cur_page()->graph == GR_EVOLVE) evolve_draw();
+    else ui_draw_page(counting);
     scr_shown();
 }
 static void ui_draw_page(uint32_t counting)
 {
+    /* Main-loop comparison, once per visible frame; uses the sound's base values,
+     * not transient automation. Reuses the existing factory/user/FM6 comparison.
+     * No audio-ISR work, new flash writes or extra saved project fields. */
+    uint8_t sound_id[2];
+    uint8_t dirty = (uint8_t)!snd_of(song.sel, sound_id);
+    if (dirty != ui.sound_dirty) {
+        ui.sound_dirty = dirty;
+        ui.force = 1;
+    }
     if (ui.uboot) {
         draw_uboot();
         draw_head();

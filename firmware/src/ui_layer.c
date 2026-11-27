@@ -754,7 +754,13 @@ static void perform_reset_params(void)
 static void layer_knob(uint32_t k, int32_t s)
 {
     uint32_t l = layer_open();
-    if (l == LAYER_FX) {                                /* perform.c perf_k, not recorded ((2.0, D 2A) back when the layer */
+    if (l == LAYER_FX) {                                /* live FX macros and their trigger grid */
+        if (k == 1u) {
+            perf_quant = (uint8_t)clamp((int32_t)perf_quant + s, 0, 5);
+            perf_k[1] = 0;                         /* K2 no longer controls audio CRUSH */
+            ui.force = 1;
+            return;
+        }
         if (k == 3u && !perf_harm_on())                 /* closes, over RETURN; OCT+ keeps: ui.c mom_*) */
             s = -s;                                     /* DEPTH (100 - perf_k[3]) rises to the right (#40: it fell) */
         (void)mom_hold(&perf_k[k], 0);
@@ -942,11 +948,16 @@ static uint32_t layer_leds(uint32_t *br)
             on = p < NTRK && glo_sounding(p);
         } else if (l == LAYER_FX) {                     /* effects breathe, held lit, a too-long REPEAT dark */
             e = perf_key(k);
-            can = e < PF_N && ((ok >> e) & 1u);
-            on = can && ((held >> e) & 1u);
+            if (k == 23u) { can = 1; on = seq_fill_on(); }
+            else can = e < PF_N && ((ok >> e) & 1u);
+            if (k != 23u) on = can && ((perf_act >> e) & 1u);
+            if (k != 23u && can && (((held ^ perf_act) >> e) & 1u)) {
+                on = (fm1_ms / 250u) & 1u;          /* queued start or stop: blink until applied */
+                can = on;
+            }
         } else if (l == LAYER_GLO) {                    /* sounding lit; SOLO held lit, the others, C4, F4 breathe; */
             e = glo_white(k);                           /* (Skiff) F4 FILL too */
-            on = b ? p < NTRK && glo_sounding(p) : (e < NTRK && ((lys.solo >> k) & 1u)) || (e == GW_FILL && seq_fill);
+            on = b ? p < NTRK && glo_sounding(p) : (e < NTRK && ((lys.solo >> k) & 1u)) || (e == GW_FILL && seq_fill_on());
             can = !b && (e < NTRK || e == GW_ALL || e == GW_FILL || (e == GW_TAP && !song.g[G_CLOCK]));
         } else if (l == LAYER_SCL) {                    /* the root lit, the scale's notes breathe */
             e = (k + 5u + 12u - root) % 12u;
@@ -1127,7 +1138,16 @@ static void layer_fx(void)
     for (e = 0; e < PF_M1; e++) {                       /* the effects of the white keys F3 .. E5, an octave a row */
         if (e % LF_ROW == 0u)
             GFX_HOOK_ALIGN(0, 0, 240, 0, AL_H | AL_CELLS | AL_N(LF_ROW), "FX cells' row centred");
-        uint32_t st = !((ok >> e) & 1u) ? LS_DIM : !((held >> e) & 1u) ? LS_OFF : (act >> e) & 1u ? LS_HELD : LS_WAIT;
+        if (e == PF_VIN) {
+            uint16_t ink, fill = lc_fill(seq_fill_on() ? LS_HELD : LS_OFF, &ink);
+            int32_t x = LF_X(e % LF_ROW);
+            lc_box(x, 50, LF_W, LC_H, fill);
+            cv_text_in(x, 55, LF_W, &AF_S, "E", ink, fill);
+            cv_text_in(x, 74, LF_W, &AF_S, "FILL", ink, fill);
+            continue;
+        }
+        uint32_t st = !((ok >> e) & 1u) ? LS_DIM : ((held ^ act) >> e) & 1u ? LS_WAIT :
+                      (act >> e) & 1u ? LS_HELD : LS_OFF;
         n[0] = W_NOTE[e];
         lcell(LF_X(e % LF_ROW), e < LF_ROW ? 4 : 50, LC_H, n, PF_ICON[e], e < 3u ? PF_DIV[e] : 0, st);
     }
@@ -1152,7 +1172,7 @@ static void layer_glo(void)
             glo_pair_cell(x + 28, y + 11, "MUTE", note, 0, trk[t].p[P_MUTE] || trk_cut(t));
         } else if (t >= GW_ALL && t <= GW_TAP) {
             int32_t x = 4 + 78 * (int32_t)(t - GW_ALL);
-            uint16_t ink, fill = lc_fill(t == GW_FILL && seq_fill ? LS_HELD :
+            uint16_t ink, fill = lc_fill(t == GW_FILL && seq_fill_on() ? LS_HELD :
                                         t == GW_TAP && song.g[G_CLOCK] ? LS_DIM : LS_OFF, &ink);
             fill = lc_box(x, 86, L6_WIDE, 28, fill);
             glo_note(note, p, 0);
@@ -1432,14 +1452,12 @@ static void layer_cards(uint32_t l)
     char val[12];
     const char *unit;
     uint32_t c;
-    if (l == LAYER_FX) {                                /* FILTER CRUSH THROW DEPTH */
+    if (l == LAYER_FX) {                                /* FILTER QUANTIZE THROW DEPTH */
         int32_t m = perf_k[0];
         fmt_int(val, m < 0 ? -m : m);
         draw_column(0, "FILTER", m ? val : "OFF", m < 0 ? "LP" : m > 0 ? "HP" : "", m ? VR_LIVE : VR_DIM, (m + 100) * 5,
                     ICON_CUTOFF);
-        fmt_int(val, perf_k[1]);
-        draw_column(1, "CRUSH", perf_k[1] ? val : "OFF", perf_k[1] ? "%" : "", perf_k[1] ? VR_LIVE : VR_DIM,
-                    perf_k[1] * 10, ICON_BITS);
+        draw_column(1, "QUANTIZE", FXQ_NAMES[perf_quant % 6u], "", VR_LIVE, -1, ICON_TIME);
         fmt_int(val, perf_k[2]);
         draw_column(2, "THROW", perf_k[2] ? val : "OFF", perf_k[2] ? "%" : "", perf_k[2] ? VR_LIVE : VR_DIM,
                     perf_k[2] * 10, ICON_DELAY);
@@ -1516,9 +1534,9 @@ static void draw_layer(void)
     layer_cards(l);
     if (l == LAYER_FX)
         sig += (perf_kill ? 0u : perf_held | perf_latched) * 31u + perf_latch_on * 11u + perf_act * 131u + perf_avail() * 7u + (uint32_t)perf_harm_on() * 3u +
-               glo_mutes() * 7717u + perf_cut * 2803u;   /* ((2.0, D 1A) the black keys: GLO's MUTE) */
+               glo_mutes() * 7717u + perf_cut * 2803u + (uint32_t)seq_fill_on() * 104729u;   /* ((2.0, D 1A) the black keys: GLO's MUTE) */
     else if (l == LAYER_GLO)
-        sig += perf_solo * 31u + (uint32_t)song.g[G_CLOCK] * 5u + (uint32_t)seq_fill * 104729u +
+        sig += perf_solo * 31u + (uint32_t)song.g[G_CLOCK] * 5u + (uint32_t)seq_fill_on() * 104729u +
                glo_mutes() * 131u + trk_top() * 1299709u + (perf_cut | perf_held >> PF_M1) * 2803u;   /* ((2.0) holds) */
     else if (l == LAYER_SCL)
         sig += (uint32_t)TSEL->p[P_SCALE] * 31u;

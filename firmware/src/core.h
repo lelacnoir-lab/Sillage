@@ -588,6 +588,12 @@ typedef struct {
 
 static track_t trk[NTRK];        /* the instrument: six parts */
 static song_t song;
+/* V3 live transpose: transient, never changes notes, patches or saved projects. */
+static struct {
+    volatile uint32_t at;
+    volatile int16_t active, target;
+    volatile uint8_t pending, mask, open, grid;
+} live_transpose = {.mask = 255u, .grid = 4u};
 /* the selected track. (Skiff 2.0) A pointer kept with song.sel, so a use is a load, not song.sel times the track's
  * size: song.sel is only ever set through sel_set (the tests too) */
 static track_t *tsel = trk;

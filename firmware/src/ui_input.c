@@ -341,6 +341,15 @@ static uint32_t key_leds(uint32_t *br)                 /* (*br: a layer's keys t
     uint32_t c;
     if (br)
         *br = 0;
+    if (live_transpose.open) {
+        c = 1u << (12 + live_transpose.active);
+        if (live_transpose.pending) {
+            uint32_t bit = 1u << (12 + live_transpose.target);
+            c &= ~bit;
+            if ((fm1_ms / 250u) & 1u) c |= bit;
+        }
+        return c;
+    }
     c = name_on() && !ui.menu ? name_leds(br) : ui.layer ? layer_leds(br) : grid_on() ? grid_leds() :
                  (fm1_in.notes & ~kb_layer) | play_leds() | step_leds();
 #if FELUCCA_SLICE
@@ -390,8 +399,8 @@ static void ui_leds(void)
     uint8_t nl[FM1_NCOL] = {0}, nd[FM1_NCOL] = {0}, own[FM1_NCOL] = {0}, og[FM1_NCOL] = {0}, nb[FM1_NCOL] = {0};
     uint8_t nm[FM1_NCOL] = {0}, sg[FM1_NCOL] = {0}, sm[FM1_NCOL] = {0};
     uint32_t k, c, g, br, beat, sc, sr = 0;
-    uint32_t fam = cur_fam(), mode = settings_leds;
-    int keys_map = keys_own();
+    uint32_t fam = live_transpose.open ? FAM_ENV : cur_fam(), mode = settings_leds;
+    int keys_map = keys_own() || live_transpose.open;
     static uint8_t ready;
     if (fm1_led_anim_on())                              /* the power-on sweep has them (main.c boot_leds) */
         return;
@@ -1736,6 +1745,19 @@ static void edit_param(uint32_t slot, int32_t steps)
         }
         return;
     }
+    if (pg->graph == GR_EVOLVE) {
+        if (slot == 0u && evolve_allowed(TSEL)) {
+            evolve_request(song.sel, (uint32_t)clamp((int32_t)evolve_want[song.sel] + steps, 0, 100));
+            ui.force = 1;
+        } else if (slot == 2u && evolve_allowed(TSEL)) {
+            evolve_octave[song.sel] = (uint8_t)(((int32_t)evolve_octave[song.sel] + steps % 3 + 3) % 3);
+            ui.force = 1;
+        } else if (slot == 3u && evolve_allowed(TSEL)) {
+            evolve_length(song.sel, steps);
+            ui.force = 1;
+        }
+        return;
+    }
     if (pg->graph == GR_BAR) {
         uint32_t span = bar_steps(TSEL);
         bar_confirm = 0;
@@ -1817,7 +1839,7 @@ static void edit_param(uint32_t slot, int32_t steps)
         return;
     }
 #endif
-    if ((pg->graph == GR_USER && slot == 2u) || (pg->graph == GR_SLOTS && slot == 1u)) {   /* (Skiff U2) USER's KNOB 3:
+    if ((pg->graph == GR_USER && pg->fam != FAM_EDIT && slot == 2u) || (pg->graph == GR_SLOTS && slot == 1u)) {   /* (Skiff U2) USER's KNOB 3:
                                                            * ERASE, one step further NAME; (1.2.1, #6) PROJECT's KNOB 2:
                                                            * DELETE, then NAME */
         int32_t st = ui.act == slot + 1u ? 1 + (int32_t)ui.act2 : 0;
@@ -1938,6 +1960,17 @@ static void tracks_wipe(void)
  * the user's data: the dialog */
 static void act_do(void)
 {
+    if (cur_page()->graph == GR_USER && cur_page()->fam == FAM_EDIT) {
+        /* SAVE SOUND is an explicit doorway, not a second preset browser. */
+        for (uint32_t i = 0; i < NPAGES; i++)
+            if (PAGES[i].fam == FAM_SAVE && PAGES[i].graph == GR_USER) {
+                ui.page = (uint8_t)i;
+                ui.fam_last[FAM_SAVE] = ui.page;
+                page_entered();
+                return;
+            }
+        return;
+    }
     if (cur_page()->graph == GR_BAR) {
         bar_edit_apply(TSEL);
         return;
@@ -2382,6 +2415,9 @@ static int page_tap(uint32_t b)
             }
             undo_label = "INIT";
             sound_init_engine(e, 0);
+            ui.design_track = (uint8_t)(song.sel + 1u);
+            ui.design_engine = TSEL->eng_req;
+            ui.design_color = 1;
         }
         ui.page = (uint8_t)page_vis_first(FAM_EDIT);
         ui.home = 0;
@@ -2458,6 +2494,7 @@ static void shift_mark(void)
         ui.home_t0 |= 2u;
 }
 #define REC_DOUBLE_MS 250u
+#include "transpose_ui.c"
 
 static void ui_input(void)
 {
@@ -2472,11 +2509,16 @@ static void ui_input(void)
     const uint32_t rec_bit = 1u << panel.btn[B_REC];
     static uint32_t lock_ms;                            /* BPM LOCK: the last locked SELECT turn (fm1_ms | 1; 0 none) */
     static uint8_t home_long;                           /* Skiff: HOME held past 0.7 s, the menu closed: MENU when let go */
+    /* Leave the EDIT tint on every other physical button, including overlays
+     * which keep the underlying page in FAM_EDIT (notably FX HOLD). */
+    if (pressed & ~(1u << panel.btn[B_EDIT])) ui.design_color = 0;
+    if ((pressed & (1u << panel.btn[B_EDIT])) && sound_design_active()) ui.design_color = 1;
     fm6_poll();                                         /* FM6: PTCH turned -> its patch */
     unit_g_poll();                                      /* ((Skiff U3, R8) the unit's CLOCK MIDI IN TUNE) */
     clock_wait_poll();                                  /* (PLAY on an external clock that sends nothing: say so) */
     bank_poll();                                        /* (Skiff) a pattern switched in live: what went out kept */
     song_poll();                                        /* (Skiff phase 5) SONG: each track's next entry staged */
+    if (transpose_input(&pressed, notes)) return;
 #if !FELUCCA_FM4 && FELUCCA_LEGACY
     for (k = 0; k < NTRK; k++)                          /* a DIGITAL sound any other way (the paths convert it */
         if (trk[k].eng_req == ENGI_DIGITAL)             /* already): FM6 (fm4_convert.c) */
@@ -2840,6 +2882,12 @@ static void ui_input(void)
             break;
         case B_OCTDN:
         case B_OCTUP: {
+            if (!ui.home && !ui.menu && !ui.confirm && !ui.layer && cur_page()->graph == GR_EVOLVE) {
+                if (b == B_OCTDN) evolve_request(song.sel, 0);
+                else for (uint32_t ek = 0; ek < NTRK; ek++) evolve_request(ek, 0);
+                ui.force = 1;
+                break;
+            }
             uint32_t both = (1u << panel.btn[B_OCTDN]) | (1u << panel.btn[B_OCTUP]);
             if (act_cols() || layer_set_open() || ui.ml.on)   /* action pages: enter / back (below); SET layers: OCT-;
                                                          * ((1.3) MIDI LEARN: below) */

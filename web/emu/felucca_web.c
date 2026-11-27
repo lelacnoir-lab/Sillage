@@ -560,3 +560,27 @@ EXPORT uint32_t web_screen_draws(void) { return web_draws; }
 EXPORT uint32_t web_now_ms(void) { return fm1_ms; }
 EXPORT uint32_t web_playing(void) { return song.playing; }
 EXPORT uint32_t web_sample_rate(void) { return FS; }
+#ifdef SILLAGE_LOCAL_TEST
+/* Read-only diagnostics for checking the exact offline test page, not the FM-1. */
+EXPORT const char *web_test_page_title(void) { return live_transpose.open ? "TRANSPOSE" : ui.home ? "HOME" : cur_page()->title; }
+EXPORT int32_t web_test_transpose_active(void) { return live_transpose.active; }
+EXPORT uint32_t web_test_transpose_pending(void) { return live_transpose.pending; }
+EXPORT uint32_t web_test_name_open(void) { return (uint32_t)name_on(); }
+EXPORT uint32_t web_test_fill_active(void) { return (uint32_t)seq_fill_on(); }
+EXPORT uint32_t web_test_evolve_want(uint32_t k) { return k < NTRK ? evolve_want[k] : 0u; }
+EXPORT uint32_t web_test_evolve_live(uint32_t k) { return k < NTRK ? evolve_live[k] : 0u; }
+EXPORT uint32_t web_test_evolve_options(uint32_t k) {
+    return k < NTRK ? evolve_octave[k] | (uint32_t)evolve_len_want[k] << 8 | (uint32_t)evolve_len_live[k] << 16 : 0u;
+}
+/* Explicit test fixture, never run at boot or when opening the user's page. */
+EXPORT void web_test_evolve_phrase(void)
+{
+    static const uint8_t at[6] = {0,4,6,9,10,12};
+    static const uint8_t notes[6] = {62,65,69,67,65,62};
+    host_preset(&trk[0], 0, 0);
+    memset(trk[0].step, 0, sizeof trk[0].step);
+    trk[0].p[P_SLEN] = 16; trk[0].p[P_SCALE] = 2; trk[0].p[P_ROOT] = 2;
+    for (uint32_t i = 0; i < 6; i++) put_step(&trk[0], at[i], 1, &notes[i], ST_NOTE, 0);
+    sel_set(0); ui.force = 1;
+}
+#endif

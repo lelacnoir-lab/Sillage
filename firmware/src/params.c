@@ -574,7 +574,7 @@ enum { GR_NONE, GR_ADSR, GR_LFO, GR_STEPS, GR_ARP, GR_SCALE, GR_FX, GR_ROLL, GR_
        GR_SMIX,                    /* (Skiff, #21) EDIT > SAMPLES: a user sample's LEVEL, REVERB, DELAY (ui.c smx_zone) */
        GR_LMIX,                    /* (2.0, #36, the user's pick 1A) EDIT > LANE MIX: a kit's lane levels and pans */
        GR_FOLLOW,                  /* (2.1) SCL > FOLLOW: the chord it follows, as CHORD's (ui_graph.c graph_follow) */
-       GR_FXDLY, GR_FXREV, GR_PRESET_INIT, GR_TRACK_EQ, GR_FINAL_MASTER, GR_BAR };
+       GR_FXDLY, GR_FXREV, GR_PRESET_INIT, GR_TRACK_EQ, GR_FINAL_MASTER, GR_BAR, GR_EVOLVE };
 
 typedef struct {
     const char *title;
@@ -650,6 +650,7 @@ static const page_t PAGES[] = {
                                                          * the grid, LANE HIT ACC VELOCITY); PRESETS the step */
     {"BAR", FAM_SEQ, SC_TRACK, GR_BAR, {0xFF, 0xFF, 0xFF, 0xFF}},
     {"FEEL", FAM_SEQ, SC_STEP, GR_FEEL, {0xFF, 0xFF, 0xFF, 0xFF}},
+    {"EVOLVE", FAM_SEQ, SC_TRACK, GR_EVOLVE, {0xFF, 0xFF, 0xFF, 0xFF}},
     {"PATTERN", FAM_SEQ, SC_TRACK, GR_STEPS, {P_SLEN, P_SDIV, P_SSWING, P_SGATE}},   /* (2.0) PRESETS: the track's DIR */
     {"GROOVE", FAM_SEQ, SC_TRACK, GR_NONE, {P_GROOVE_HUMAN, P_GROOVE_ACCENT, P_GROOVE_TIMING, P_GROOVE_VELOCITY}},
     {"GROOVE 2", FAM_SEQ, SC_TRACK, GR_NONE, {P_GROOVE_DECAY, 0xFF, 0xFF, 0xFF}},
@@ -657,6 +658,7 @@ static const page_t PAGES[] = {
     {"SONG", FAM_SEQ, SC_TRACK, GR_SONG, {0xFF, 0xFF, 0xFF, 0xFF}},   /* (Skiff phase 5) the lists (ui_input.c song_knob) */
     {"FM ENV", FAM_ENV, SC_TRACK, GR_FMOP, {0xFF, 0xFF, 0xFF, 0xFF}}, /* Sillage: direct access to operator envelopes */
     {"PRESET INIT", FAM_EDIT, SC_TRACK, GR_PRESET_INIT, {0xFF, 0xFF, 0xFF, 0xFF}},
+    {"SAVE SOUND", FAM_EDIT, SC_TRACK, GR_USER, {0xFF, 0xFF, 0xFF, 0xFF}},
 };
 #define NPAGES (sizeof(PAGES) / sizeof(PAGES[0]))
 /* (2.0, D 1A) the MOD page: the route KNOB 1 picks (0..10): the seven fixed routings (LFO DEST's and ENV DEST's of

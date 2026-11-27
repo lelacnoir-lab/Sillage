@@ -194,6 +194,8 @@ static int32_t scale_snap(const track_t *t, int32_t n)
     return n;
 }
 
+#include "evolve.c"
+
 enum { QN_OFF, QN_SNAP, QN_WHITE, QN_SEQ, QN_SEQT, QN_SOLO };   /* P_QUANT ((1.3, from Felucca 1.5.6) SEQ+T: appended;
                                                          * older firmware loads SEQ. (2.1, #74) SOLO appended: firmware
                                                          * before loads it as SEQ+T, the keys snapped) */
@@ -447,6 +449,8 @@ static __attribute__((noinline)) uint32_t seq_next(track_t *t, uint32_t len)
 
 #include "take.c"                                   /* Skiff: TAKES' log (input_on/off, the arp, motion_capture) */
 static volatile uint8_t seq_fill;                   /* Skiff: FILL held (GLO + F4, ui_layer.c): the FILL steps play */
+static volatile uint8_t seq_fx_fill; /* FX HOLD E5: momentary, never latched */
+static int seq_fill_on(void) { return seq_fill || (!perf_kill && seq_fx_fill); }
 /* Skiff: step s of track t passes its trig condition (core.h TC_*) on this pass of the track's loop (take_pass: the
  * first pass since PLAY is 1; ahead 1: the next pass, a step played early (NUDGE) before its pass starts); a step
  * without one always does. No random number taken (the CHANCE roll after it).
@@ -459,7 +463,7 @@ static __attribute__((noinline)) int step_cond_ok(const track_t *t, const step_t
     if (c == TC_NONE || c >= TC_COUNT)
         return 1;
     if (c == TC_FILL || c == TC_NFILL)
-        return (c == TC_FILL) == (seq_fill != 0u);
+        return (c == TC_FILL) == seq_fill_on();
     p = take_pass[trk_index(t)] + ahead;
     return p > 0u && (p - 1u) % B[c] + 1u == A[c];
 }
@@ -598,6 +602,21 @@ static __attribute__((noinline)) uint32_t arp_pick(track_t *t, uint32_t *list, u
  * gate counts down by (real time when the external transport stops: a tapped or latched note still ends) */
 static volatile uint32_t beat_pos, beat_n;      /* samples into the beat, the beat of the bar (0..3) */
 static volatile uint32_t launch_steps;          /* (Skiff) 1/16 steps since PLAY (launch.c launch_clock: BAR / BEAT) */
+static const uint8_t TP_GRID[5] = {0, 2, 4, 8, 16};
+static void transpose_request(int32_t offset)
+{
+    uint32_t grid = TP_GRID[live_transpose.grid % 5u];
+    live_transpose.pending = 0;
+    live_transpose.target = (int16_t)clamp(offset, -12, 14);
+    if (!song.playing || !grid) {
+        live_transpose.active = live_transpose.target;
+    } else if (live_transpose.target != live_transpose.active) {
+        uint32_t step = launch_steps;
+        live_transpose.at = (step / grid + 1u) * grid;
+        live_transpose.pending = 1;
+    }
+}
+
 static uint32_t launch_pos;                     /* (Skiff) .. samples into the one now (counted before the tracks tick) */
 
 /* the metronome (click.c) and the count-in (1.1, Discussion #131). The click follows the song tempo's quarter notes
@@ -1045,7 +1064,7 @@ static void input_off(track_t *t, uint32_t note)
 static uint32_t perf_key(uint32_t k)
 {
     uint32_t p = key_place(k);
-    return !key_black(k) ? (p < PF_M1 ? p : PF_N) : p < NTRK ? PF_M1 + p : PF_N;
+    return !key_black(k) ? (p < PF_M1 && p != PF_VIN ? p : PF_N) : p < NTRK ? PF_M1 + p : PF_N;
 }
 
 /* (2.1, #74) the notes key k plays on track t into kb_chord[k], their number: its chord (chord_build), a SOLO black key's
@@ -1244,7 +1263,7 @@ static __attribute__((noinline)) void keyboard_block(void)
         kb_prev = cur;
         return;
     }
-    lay = (fm1_in.buttons & kb_mask) || kb_lock;  /* (#83: kb_lock, a layer locked open with no button held) */
+    lay = (fm1_in.buttons & kb_mask) || kb_lock || live_transpose.open;  /* (#83: kb_lock, a layer locked open with no button held) */
     fx = (fm1_in.buttons & perf_mask) || (kb_lock & 2u);
     for (k = 0; k < 27u; k++) {
         if (!((ch >> k) & 1u))
@@ -1259,8 +1278,10 @@ static __attribute__((noinline)) void keyboard_block(void)
             if (lay) {                            /* a layer's button held (or locked): the key is the layer's */
                 kb_note[k] = KB_SILENT;           /* (ui_layer.c), with FX an effect (perform.c) */
                 kb_layer |= 1u << k;
-                if (fx)
-                    perf_press(perf_key(k), 1);
+                if (fx) {
+                    if (k == 23u) seq_fx_fill = 1; /* last E, previously VINYL */
+                    else perf_press(perf_key(k), 1);
+                }
                 continue;
             }
             if (song.grid == 2u)                  /* NAME (ui_name.c): every key types, none sounds */
@@ -1279,6 +1300,7 @@ static __attribute__((noinline)) void keyboard_block(void)
         } else {
             if ((kb_layer >> k) & 1u) {
                 kb_layer &= ~(1u << k);
+                if (k == 23u) seq_fx_fill = 0;
                 perf_press(perf_key(k), 0);
                 continue;
             }
@@ -1406,6 +1428,10 @@ static void seq_stop(void)
 {
     uint32_t i;
     song.playing = 0;
+    live_transpose.pending = 0;
+    /* Cancel FX starts not yet heard; stopped releases are immediate. */
+    perf_latched &= perf_act;
+    perf_held &= perf_act | PF_MUTE;
     free_stop();                                   /* ((2.5) take.c: what is played from now: a free take */
     thr_out = 0;                                   /* (Skiff) the throws back at once (throw.c) */
     cin_left = 0;                                  /* (a count-in: cancelled, nothing recorded) */
@@ -1741,7 +1767,9 @@ static __attribute__((noinline)) void seq_ratchet(track_t *t, uint32_t period)
 static void mo_motion(track_t *t, uint32_t idx, uint32_t play);   /* ((2.2) motion_step, an EXT track's CCs out) */
 static __attribute__((noinline)) void seq_fire(track_t *t, uint32_t idx, uint32_t period, uint32_t ahead)
 {
+    step_t generated;
     const step_t *s = &t->step[idx];
+    if (evolve_live[trk_index(t)] && evolve_note_at(t, idx, evolve_live[trk_index(t)], &generated, 1)) s = &generated;
     uint32_t skip = SEQ_ROLLED, i, k;
     t->fire_idx = (uint8_t)idx;
     /* the chance first (the one roll, as seq_step made it): a step that does not play applies no lock; the
@@ -1763,6 +1791,10 @@ static __attribute__((noinline)) void seq_fire(track_t *t, uint32_t idx, uint32_
         t->rskip_n = 0;
     }
     seq_step(t, s, period, skip);
+    if (s == &generated && t->seq_n) {
+        uint32_t pct = evolve_len_live[trk_index(t)];
+        t->seq_off = step_samples(t, period, idx) / 100u * (pct ? pct : 50u);
+    }
 }
 
 /* (Skiff) NUDGE: a step plays its nudge (64ths of its own length) from its start, later or earlier. On entering a
@@ -1799,6 +1831,7 @@ static __attribute__((noinline)) uint32_t seq_time(track_t *t, uint32_t idx, uin
 static __attribute__((noinline)) void seq_enter(track_t *t, uint32_t period, uint32_t len)
 {
     uint32_t i = t->seq_idx, cur = step_samples(t, period, i), h;
+    if (t->seq_cnt == 1u) evolve_commit(trk_index(t));
     int32_t d = step_nudge(t, i);
     if ((t->nud & NUD_DONE) && t->early_idx == i) {
         /* played early */
@@ -1838,6 +1871,12 @@ static __attribute__((noinline)) void seq_nudge(track_t *t, uint32_t period, uin
 }
 
 #include "launch.c"                                 /* Skiff: live pattern switching (the bank's, at launch points) */
+/* The FX panel follows the actual musical transport, including tempo changes
+ * and song-position jumps, rather than reducing an unrelated sample counter. */
+static uint32_t perf_transport_phase(void)
+{
+    return (launch_steps & 31u) * div_samples(2) + (launch_pos == CLK_START ? 0u : launch_pos);
+}
 
 static void seq_tick(track_t *t, uint32_t n)
 {
@@ -2226,6 +2265,10 @@ static __attribute__((noinline)) void events_block(uint32_t n)
         seq_n = clock_ext_block();
     if (song.playing)
         launch_clock(seq_n);                          /* (Skiff) the steps a BAR / BEAT launch waits for */
+    if (live_transpose.pending && (!song.playing || (int32_t)(launch_steps - live_transpose.at) >= 0)) {
+        live_transpose.active = live_transpose.target;
+        live_transpose.pending = 0;
+    }
     if (aud_req)
         seq_audition();                               /* ((1.3) STEP PREVIEW: a step sounds, stopped) */
     for (i = 0, ord = fol_order(); i < NTRK; i++, ord >>= 4)   /* ((2.1) the tracks followed first: follow.c) */

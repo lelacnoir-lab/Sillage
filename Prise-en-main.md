@@ -2,7 +2,7 @@
 
 Sillage est une groovebox à huit pistes pour le M‑VAVE FM‑1, dérivée de Skiff et de Felucca. Chaque piste peut accueillir un synthé ou un kit de batterie. Les 448 presets usine sont classés par famille. Le séquenceur, qui va jusqu’à 64 pas par piste, sert à construire le morceau et PERFORM permet de jouer les patterns, les scènes et les mutes en direct.
 
-Ce guide décrit Sillage 2.2 beta. La mesure de charge audio et le transfert de samples utilisateur restent à vérifier sur le FM‑1 physique.
+Ce guide décrit Sillage V3. La mesure de charge audio et le transfert de samples utilisateur restent à vérifier sur le FM‑1 physique.
 
 ## Partie 1 — Prise en main rapide
 
@@ -21,3 +21,8 @@ Sur la même page, **DUPLICATE** insère une copie juste après la mesure sélec
 ## Donner plus de niveau et de largeur au mix
 
 Ouvre **GLO → FINAL MASTER**, active **MASTER FX** avec **K4**, puis règle **LOUD** (K1) pour le gain et **WIDTH** (K3) pour la largeur stéréo. **CEILING** (K2) règle le plafond des crêtes.
+
+
+## Nouveautés V3
+
+Voir [le manuel complet](Manuel-de-reference.md#nouveautés-v3--utilisation-détaillée) pour EVOLVE, Sound Design/SAVE SOUND, transposition et FX HOLD/FILL. Le [guide rapide anglais PDF](docs/Sillage-V3-Quick-Start-EN.pdf) regroupe les commandes essentielles. EVOLVE et la transposition sont temporaires. Le nom interne du binaire reste V3 beta 1.
